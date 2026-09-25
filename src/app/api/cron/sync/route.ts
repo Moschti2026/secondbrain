@@ -1,4 +1,3 @@
-import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { accounts } from "@/db/schema";
 import { syncGoogleDrive } from "@/lib/connectors/google-drive";

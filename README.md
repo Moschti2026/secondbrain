@@ -1,36 +1,67 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Secondbrain
 
-## Getting Started
+Ein persönlicher Cloud-Assistent, der Google Drive, Microsoft 365/SharePoint, lokale Dateien und eigene Notizen durchsuchbar macht: Chat mit Quellenangaben (RAG) plus ein Notizsystem mit `[[Wiki-Links]]`.
 
-First, run the development server:
+Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+## Features
+
+- **Chat/RAG** – Frage stellen, Antwort mit Zitaten aus deinen eigenen Dokumenten (`/chat`)
+- **Google Drive** – inkrementeller Sync über die Changes API
+- **Microsoft 365 / OneDrive** – inkrementeller Sync über die Graph Delta-API
+- **Lokale Dateien** – kleines CLI-Tool (`local-sync-cli/`) synchronisiert einen Ordner auf deinem Rechner
+- **Notizen** – Markdown-Notizen mit `[[Verlinkung]]` und Backlinks (`/notes`)
+- Unterstützte Dateitypen: PDF, DOCX, TXT, Markdown, CSV, JSON (Google Docs/Sheets/Slides werden automatisch exportiert)
+
+## Stack
+
+- Next.js 16 (App Router, TypeScript, Tailwind)
+- Postgres + [pgvector](https://github.com/pgvector/pgvector) via Drizzle ORM (empfohlen: [Supabase](https://supabase.com), da Postgres+pgvector+Storage+Auth aus einer Hand)
+- [Auth.js](https://authjs.dev) mit Google- und Microsoft-Entra-ID-Providern (gleichzeitig Login und OAuth-Zugriff auf Drive/Graph)
+- [Claude](https://www.anthropic.com/claude) (Anthropic API) für Chat-Antworten, [Voyage AI](https://www.voyageai.com/) für Embeddings
+
+## Setup
+
+### 1. Datenbank
+
+Ein Supabase-Projekt anlegen (oder eine eigene Postgres-Instanz mit `pgvector`). Verbindungsstring in `DATABASE_URL` eintragen.
+
+### 2. Umgebungsvariablen
+
+```bash
+cp .env.example .env.local
+```
+
+Alle Werte in `.env.local` eintragen (Anleitung zu jedem Wert steht als Kommentar in `.env.example`):
+
+- Google-OAuth-Client (Google Cloud Console, Drive API aktivieren)
+- Microsoft-Entra-ID-App-Registrierung (Azure Portal)
+- Anthropic-API-Key
+- Voyage-AI-API-Key
+
+### 3. Abhängigkeiten & Migration
+
+```bash
+npm install
+npx drizzle-kit migrate
+```
+
+### 4. Entwicklung
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 5. Lokale Dateien synchronisieren (optional)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Siehe [local-sync-cli/README.md](./local-sync-cli/README.md). Den API-Key dafür erzeugst du in der App unter **Einstellungen**.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 6. Deployment
 
-## Learn More
+Für Vercel: Repo importieren, Umgebungsvariablen setzen, `CRON_SECRET` setzen (für den in `vercel.json` konfigurierten periodischen Sync alle 6 Stunden).
 
-To learn more about Next.js, take a look at the following resources:
+## Bekannte Grenzen (v1)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- SharePoint-Bibliotheken (nur OneDrive) und das Löschen lokal entfernter Dateien sind noch nicht angebunden – siehe ARCHITECTURE.md, Abschnitt "Nicht enthalten / nächste Schritte".
+- Kein automatisches Zusammenführen von Duplikaten über Quellen hinweg (z.B. dieselbe Datei in Drive und lokal).
+- Keine Volltextsuche als Fallback, wenn die Vektorsuche nichts Relevantes findet – die Antwort sagt dann ehrlich, dass nichts gefunden wurde.
