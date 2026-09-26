@@ -1,4 +1,4 @@
-import { PDFParse } from "pdf-parse";
+import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
 import mammoth from "mammoth";
 
 const TEXT_MIME_TYPES = [
@@ -49,13 +49,13 @@ export async function extractText(
   const type = mimeType ?? "";
 
   if (type === "application/pdf") {
-    const parser = new PDFParse({ data: buffer });
-    try {
-      const result = await parser.getText();
-      return result.text;
-    } finally {
-      await parser.destroy();
-    }
+    // unpdf bundles a serverless-safe pdf.js build with no native
+    // dependencies (unlike pdf-parse, which pulls in @napi-rs/canvas and
+    // crashes on Vercel at import time — this cost us a real debugging
+    // session, so don't swap this back without checking that first).
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const { text } = await extractPdfText(pdf, { mergePages: true });
+    return text;
   }
 
   if (
