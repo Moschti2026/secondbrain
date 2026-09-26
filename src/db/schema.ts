@@ -16,6 +16,11 @@ export const EMBEDDING_DIMENSIONS = 1024;
 
 // --- Auth.js core tables (required shape for @auth/drizzle-adapter) ---
 
+// Note: these four Auth.js tables are RLS-enabled at the database level
+// (see the one-time SQL in DEPLOYMENT.md) but can't chain `.enableRLS()`
+// here — @auth/drizzle-adapter's DrizzleAdapter() types its table
+// parameters against the un-narrowed PgTableWithColumns shape, which
+// `.enableRLS()`'s return type (Omit<..., 'enableRLS'>) doesn't satisfy.
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name"),
@@ -101,7 +106,7 @@ export const documents = pgTable(
     index("documents_user_idx").on(t.userId),
     uniqueIndex("documents_user_external_idx").on(t.userId, t.kind, t.externalId),
   ]
-);
+).enableRLS();
 
 // Chunked, embedded text for RAG. Every ingested document is split into
 // chunks here — notes included, since a note written in Obsidian is just
@@ -128,7 +133,7 @@ export const chunks = pgTable(
       t.embedding.op("vector_cosine_ops")
     ),
   ]
-);
+).enableRLS();
 
 // Incremental-sync cursor per user/provider (Drive startPageToken, Graph
 // deltaLink), so cron re-syncs only pull what changed.
@@ -146,7 +151,7 @@ export const syncState = pgTable(
     lastSyncedAt: timestamp("lastSyncedAt", { mode: "date" }),
   },
   (t) => [uniqueIndex("sync_state_user_provider_idx").on(t.userId, t.provider)]
-);
+).enableRLS();
 
 // API keys for the local-sync CLI. The key itself is only ever shown once;
 // we store a SHA-256 hash.
@@ -159,4 +164,4 @@ export const syncKeys = pgTable("sync_keys", {
   hashedKey: text("hashedKey").notNull().unique(),
   createdAt: timestamp("createdAt", { mode: "date" }).notNull().defaultNow(),
   lastUsedAt: timestamp("lastUsedAt", { mode: "date" }),
-});
+}).enableRLS();

@@ -8,6 +8,13 @@
       "when": 1790381333440,
       "tag": "0000_dusty_toad_men",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790457343967,
+      "tag": "0001_windy_klaw",
+      "breakpoints": true
     }
   ]
 }
