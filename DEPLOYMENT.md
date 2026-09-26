@@ -52,11 +52,34 @@ Das hier sind die Schritte, die nur du selbst machen kannst (eigene Accounts, ei
 
 ## 7. Datenbank-Migration ausführen
 
-Einmalig, von einem Rechner mit Zugriff auf `DATABASE_URL` aus (lokal, oder ich mache es hier in dieser Session, wenn du mir den Connection-String gibst):
+**Von einem Rechner mit direktem Postgres-Zugriff** (lokal, nicht aus einer Sandbox mit reinem HTTPS-Egress):
 
 ```bash
 npm install
 npx drizzle-kit migrate
+```
+
+**Alternative, falls kein direkter Postgres-Zugriff möglich ist** (z.B. Cloud-Sandbox ohne rohe TCP-Verbindungen — Postgres läuft nicht über HTTPS): Den Inhalt jeder Datei aus `drizzle/*.sql` (aktuell `0000_*.sql`, dann `0001_*.sql`) der Reihe nach in Supabase → **SQL Editor** → **New query** einfügen und ausführen.
+
+Danach zusätzlich einmalig RLS für die vier Auth.js-Tabellen aktivieren (aus Typgründen nicht in `schema.ts` deklarierbar, siehe Kommentar dort — trotzdem am Datenbank-Server sinnvoll) und das Migrations-Tracking von drizzle-kit nachtragen, damit ein späteres `drizzle-kit migrate` nichts doppelt anwendet:
+
+```sql
+ALTER TABLE "accounts" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "sessions" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "users" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "verificationTokens" ENABLE ROW LEVEL SECURITY;
+
+CREATE SCHEMA IF NOT EXISTS drizzle;
+CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (
+  id SERIAL PRIMARY KEY,
+  hash text NOT NULL,
+  created_at bigint
+);
+-- Ein Eintrag pro angewendeter Datei aus drizzle/, mit dem sha256-Hash
+-- ihres Inhalts und dem "when"-Timestamp aus drizzle/meta/_journal.json.
+INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
+  ('<sha256-hex des Inhalts von 0000_*.sql>', <when aus dem Journal>),
+  ('<sha256-hex des Inhalts von 0001_*.sql>', <when aus dem Journal>);
 ```
 
 ## 8. Cron-Job für automatischen Re-Sync
