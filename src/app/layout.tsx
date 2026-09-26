@@ -36,7 +36,6 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
               </Link>
               <div className="flex items-center gap-4 text-sm">
                 <Link href="/chat" className="hover:underline">Chat</Link>
-                <Link href="/notes" className="hover:underline">Notizen</Link>
                 <Link href="/settings" className="hover:underline">Einstellungen</Link>
                 <span className="text-neutral-400">{session.user.email}</span>
                 <form

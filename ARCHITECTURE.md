@@ -8,14 +8,14 @@
                      │  (Vercel, App Router) │
                      └──────────┬───────────┘
                                 │
-        ┌───────────────┬──────┴───────┬────────────────┐
-        │               │              │                │
-   Auth.js          Chat/RAG API   Notes API        Ingest API
- (Google/MS OAuth)   /api/chat     /api/notes     /api/ingest
-        │               │              │                │
-        └───────┬───────┴──────┬───────┴────────────────┘
-                │              │
-         ┌──────▼──────┐ ┌─────▼─────┐        ┌─────────────────┐
+        ┌───────────────┬──────────────┴──────┐
+        │               │                     │
+   Auth.js          Chat/RAG API          Ingest API
+ (Google/MS OAuth)   /api/chat           /api/ingest
+        │               │                     │
+        └───────┬───────┴─────────────────────┘
+                │
+         ┌──────▼──────┐ ┌───────────┐        ┌─────────────────┐
          │  Postgres    │ │  Claude   │        │ Voyage AI        │
          │  + pgvector  │ │  (Chat)   │        │ (Embeddings)     │
          │  (Supabase)  │ └───────────┘        └─────────────────┘
@@ -24,17 +24,16 @@
    ┌────────────┼─────────────────┐
    │            │                 │
 Google Drive  Microsoft Graph   local-sync-cli
-(Changes API) (Delta query)     (auf dem eigenen Rechner)
+(Changes API) (Delta query)     (auf dem eigenen Rechner, z.B.
+                                  auf den Obsidian-Vault gerichtet)
 ```
 
 ## Datenmodell (`src/db/schema.ts`)
 
-Alles, was durchsuchbar sein soll — eine Drive-Datei, eine OneDrive-Datei, eine lokal synchronisierte Datei oder eine Notiz — wird als **`documents`**-Zeile abgebildet. Das hält die RAG-Suche über alle Quellen hinweg einheitlich: `chunks` referenziert immer ein `document`, egal woher es kommt.
+Alles, was durchsuchbar sein soll — eine Drive-Datei, eine OneDrive-Datei oder eine lokal synchronisierte Datei (Notizen aus Obsidian eingeschlossen: das sind einfach Markdown-Dateien im synchronisierten Ordner) — wird als **`documents`**-Zeile abgebildet. Das hält die RAG-Suche über alle Quellen hinweg einheitlich: `chunks` referenziert immer ein `document`, egal woher es kommt. Es gibt bewusst keine separate Notizen-Tabelle — siehe [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md).
 
 - `users` / `accounts` / `sessions` / `verificationTokens` — Auth.js-Standardschema (`@auth/drizzle-adapter`). `accounts` speichert die OAuth-Access-/Refresh-Tokens für Google und Microsoft — dieselben Tokens, mit denen sich der Nutzer anmeldet, werden für die Hintergrund-Syncs wiederverwendet (kein zweiter OAuth-Flow nötig).
-- `documents` — ein Dokument jeder Art (`kind`: `google_drive` | `microsoft365` | `local` | `note`), mit `contentHash` zur Erkennung unveränderter Dateien.
-- `notes` — 1:1 mit `documents` (gleiche `id`), enthält den editierbaren Markdown-Inhalt.
-- `note_links` — `[[Wiki-Links]]` zwischen Notizen; `targetNoteId` ist `null`, solange die Zielnotiz noch nicht existiert (unaufgelöster Link).
+- `documents` — ein Dokument jeder Art (`kind`: `google_drive` | `microsoft365` | `local`), mit `contentHash` zur Erkennung unveränderter Dateien.
 - `chunks` — Text-Chunks mit Embedding (`vector(1024)`, HNSW-Index für Cosine-Similarity), Grundlage für die RAG-Suche.
 - `sync_state` — Cursor pro Nutzer/Provider (Drive `startPageToken`, Graph `deltaLink`), damit ein erneuter Sync nur tatsächliche Änderungen abholt.
 - `sync_keys` — gehashte API-Keys für den lokalen Sync-Client.
@@ -67,7 +66,7 @@ Eine Cloud-App kann nicht direkt auf den Rechner des Nutzers zugreifen. Der loka
 
 ## Sicherheit / Mandantentrennung
 
-Jede Abfrage ist über `userId` gescoped (Chunks, Dokumente, Notizen, Sync-State, API-Keys). Es gibt aktuell keine Multi-Tenant-Freigabe zwischen Nutzern — jeder Account sieht ausschließlich seine eigenen Daten.
+Jede Abfrage ist über `userId` gescoped (Chunks, Dokumente, Sync-State, API-Keys). Es gibt aktuell keine Multi-Tenant-Freigabe zwischen Nutzern — jeder Account sieht ausschließlich seine eigenen Daten.
 
 ## Nicht enthalten / nächste Schritte
 

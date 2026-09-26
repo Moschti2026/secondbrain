@@ -139,39 +139,3 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
 
   return { documentId, skipped: false, chunkCount: pieces.length };
 }
-
-/**
- * (Re-)indexes a note's markdown content. Notes skip extractText/hash
- * comparison since the editor already has the exact current content and
- * calls this on every save.
- */
-export async function ingestNote(params: {
-  documentId: string;
-  userId: string;
-  title: string;
-  content: string;
-}): Promise<{ chunkCount: number }> {
-  const pieces = chunkText(params.content);
-  const vectors = await embedAllChunks(pieces.map((p) => p.content));
-
-  await db.delete(chunks).where(eq(chunks.documentId, params.documentId));
-
-  if (pieces.length > 0) {
-    await db.insert(chunks).values(
-      pieces.map((piece, i) => ({
-        documentId: params.documentId,
-        userId: params.userId,
-        ordinal: piece.ordinal,
-        content: piece.content,
-        embedding: vectors[i],
-      }))
-    );
-  }
-
-  await db
-    .update(documents)
-    .set({ title: params.title, indexedAt: new Date(), indexError: null })
-    .where(eq(documents.id, params.documentId));
-
-  return { chunkCount: pieces.length };
-}

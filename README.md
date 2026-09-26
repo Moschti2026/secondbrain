@@ -1,16 +1,15 @@
 # Secondbrain
 
-Ein persönlicher Cloud-Assistent, der Google Drive, Microsoft 365/SharePoint, lokale Dateien und eigene Notizen durchsuchbar macht: Chat mit Quellenangaben (RAG) plus ein Notizsystem mit `[[Wiki-Links]]`.
+Ein persönlicher Cloud-Assistent, der Google Drive, Microsoft 365/SharePoint und lokale Dateien (inkl. Obsidian-Notizen) durchsuchbar macht: Chat mit Quellenangaben (RAG) über alles zusammen.
 
-Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md).
+Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md). Notizen-Setup: [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md).
 
 ## Features
 
 - **Chat/RAG** – Frage stellen, Antwort mit Zitaten aus deinen eigenen Dokumenten (`/chat`)
 - **Google Drive** – inkrementeller Sync über die Changes API
 - **Microsoft 365 / OneDrive** – inkrementeller Sync über die Graph Delta-API
-- **Lokale Dateien** – kleines CLI-Tool (`local-sync-cli/`) synchronisiert einen Ordner auf deinem Rechner
-- **Notizen** – Markdown-Notizen mit `[[Verlinkung]]` und Backlinks (`/notes`)
+- **Lokale Dateien & Obsidian-Notizen** – kleines CLI-Tool (`local-sync-cli/`) synchronisiert einen Ordner (z.B. deinen Obsidian-Vault) auf deinem Rechner
 - Unterstützte Dateitypen: PDF, DOCX, TXT, Markdown, CSV, JSON (Google Docs/Sheets/Slides werden automatisch exportiert)
 
 ## Stack
@@ -52,9 +51,9 @@ npx drizzle-kit migrate
 npm run dev
 ```
 
-### 5. Lokale Dateien synchronisieren (optional)
+### 5. Lokale Dateien & Notizen synchronisieren (optional)
 
-Siehe [local-sync-cli/README.md](./local-sync-cli/README.md). Den API-Key dafür erzeugst du in der App unter **Einstellungen**.
+Siehe [local-sync-cli/README.md](./local-sync-cli/README.md) bzw. [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md) für Notizen. Den API-Key dafür erzeugst du in der App unter **Einstellungen**.
 
 ### 6. Deployment
 

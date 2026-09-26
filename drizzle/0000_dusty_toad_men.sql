@@ -41,23 +41,6 @@ CREATE TABLE "documents" (
 	"createdAt" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "note_links" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"sourceNoteId" uuid NOT NULL,
-	"targetNoteId" uuid,
-	"targetTitle" text NOT NULL,
-	"createdAt" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "notes" (
-	"id" uuid PRIMARY KEY NOT NULL,
-	"userId" uuid NOT NULL,
-	"title" text NOT NULL,
-	"content" text DEFAULT '' NOT NULL,
-	"createdAt" timestamp DEFAULT now() NOT NULL,
-	"updatedAt" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "sessions" (
 	"sessionToken" text PRIMARY KEY NOT NULL,
 	"userId" uuid NOT NULL,
@@ -104,10 +87,6 @@ ALTER TABLE "accounts" ADD CONSTRAINT "accounts_userId_users_id_fk" FOREIGN KEY 
 ALTER TABLE "chunks" ADD CONSTRAINT "chunks_documentId_documents_id_fk" FOREIGN KEY ("documentId") REFERENCES "public"."documents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "chunks" ADD CONSTRAINT "chunks_userId_users_id_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "documents" ADD CONSTRAINT "documents_userId_users_id_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "note_links" ADD CONSTRAINT "note_links_sourceNoteId_notes_id_fk" FOREIGN KEY ("sourceNoteId") REFERENCES "public"."notes"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "note_links" ADD CONSTRAINT "note_links_targetNoteId_notes_id_fk" FOREIGN KEY ("targetNoteId") REFERENCES "public"."notes"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "notes" ADD CONSTRAINT "notes_id_documents_id_fk" FOREIGN KEY ("id") REFERENCES "public"."documents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "notes" ADD CONSTRAINT "notes_userId_users_id_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_userId_users_id_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sync_keys" ADD CONSTRAINT "sync_keys_userId_users_id_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sync_state" ADD CONSTRAINT "sync_state_userId_users_id_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -115,5 +94,4 @@ CREATE INDEX "chunks_document_idx" ON "chunks" USING btree ("documentId");--> st
 CREATE INDEX "chunks_embedding_idx" ON "chunks" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
 CREATE INDEX "documents_user_idx" ON "documents" USING btree ("userId");--> statement-breakpoint
 CREATE UNIQUE INDEX "documents_user_external_idx" ON "documents" USING btree ("userId","kind","externalId");--> statement-breakpoint
-CREATE INDEX "note_links_source_idx" ON "note_links" USING btree ("sourceNoteId");--> statement-breakpoint
 CREATE UNIQUE INDEX "sync_state_user_provider_idx" ON "sync_state" USING btree ("userId","provider");

@@ -24,24 +24,17 @@ export default async function HomePage() {
       <div>
         <h1 className="text-2xl font-semibold">Willkommen zurück</h1>
         <p className="text-neutral-500">
-          {documentCount} indexierte Dokumente aus Drive, Microsoft 365, lokalen Dateien und Notizen.
+          {documentCount} indexierte Dokumente aus Drive, Microsoft 365 und lokalen Dateien (inkl. Obsidian-Notizen).
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Link
           href="/chat"
           className="rounded-lg border border-neutral-200 p-5 hover:border-neutral-400 dark:border-neutral-800"
         >
           <div className="text-lg font-medium">💬 Chat</div>
           <div className="text-sm text-neutral-500">Über alle deine Daten fragen</div>
-        </Link>
-        <Link
-          href="/notes"
-          className="rounded-lg border border-neutral-200 p-5 hover:border-neutral-400 dark:border-neutral-800"
-        >
-          <div className="text-lg font-medium">📝 Notizen</div>
-          <div className="text-sm text-neutral-500">Wissen festhalten und verlinken</div>
         </Link>
         <Link
           href="/settings"

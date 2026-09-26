@@ -86,6 +86,11 @@ export default async function SettingsPage() {
           Mit einem API-Key kannst du den lokalen Sync-Client (<code>local-sync-cli</code>) auf deinem
           Rechner einrichten, um einen Ordner automatisch mit diesem Secondbrain zu synchronisieren.
         </p>
+        <p className="rounded-md border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300">
+          <strong>Notizen mit Obsidian:</strong> Zeig den Sync-Client einfach auf deinen Obsidian-Vault-Ordner.
+          Du schreibst Notizen wie gewohnt in Obsidian, jede Änderung wird automatisch hier durchsuchbar.
+          Schritt-für-Schritt-Anleitung: <a href="https://github.com/moschti2026/secondbrain/blob/main/OBSIDIAN_SETUP.md" target="_blank" rel="noreferrer" className="underline">OBSIDIAN_SETUP.md</a>.
+        </p>
         <ApiKeyManager
           initialKeys={keys.map((k) => ({
             ...k,

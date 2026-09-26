@@ -66,12 +66,14 @@ export const verificationTokens = pgTable(
 
 // --- Application tables ---
 
-export const documentKinds = ["google_drive", "microsoft365", "local", "note"] as const;
+export const documentKinds = ["google_drive", "microsoft365", "local"] as const;
 export type DocumentKind = (typeof documentKinds)[number];
 
 // One row per indexable "thing": a Drive file, a OneDrive/SharePoint file,
-// a file synced from the local machine, or a note. Chunks always hang off
-// a document so chat/RAG search treats every source uniformly.
+// or a file synced from the local machine (including notes written in
+// Obsidian — they're just markdown files in a synced folder, no separate
+// "note" concept needed). Chunks always hang off a document so chat/RAG
+// search treats every source uniformly.
 export const documents = pgTable(
   "documents",
   {
@@ -80,8 +82,8 @@ export const documents = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").$type<DocumentKind>().notNull(),
-    // Provider file id (Drive fileId / Graph driveItem id). Null for notes
-    // and for local files identified only by path.
+    // Provider file id (Drive fileId / Graph driveItem id). Null for local
+    // files, which are identified by path instead.
     externalId: text("externalId"),
     // Relative path for local-sync files, so re-uploads of the same file
     // update the same document instead of duplicating it.
@@ -101,41 +103,9 @@ export const documents = pgTable(
   ]
 );
 
-// Notes are documents with editable markdown content. 1:1 with documents
-// (kind = 'note'); split out so the editor has a focused table.
-export const notes = pgTable("notes", {
-  id: uuid("id")
-    .primaryKey()
-    .references(() => documents.id, { onDelete: "cascade" }),
-  userId: uuid("userId")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  content: text("content").notNull().default(""),
-  createdAt: timestamp("createdAt", { mode: "date" }).notNull().defaultNow(),
-  updatedAt: timestamp("updatedAt", { mode: "date" }).notNull().defaultNow(),
-});
-
-// [[wiki-link]] edges between notes. targetNoteId is null until a note
-// with a matching title exists (unresolved link).
-export const noteLinks = pgTable(
-  "note_links",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    sourceNoteId: uuid("sourceNoteId")
-      .notNull()
-      .references(() => notes.id, { onDelete: "cascade" }),
-    targetNoteId: uuid("targetNoteId").references(() => notes.id, {
-      onDelete: "set null",
-    }),
-    targetTitle: text("targetTitle").notNull(),
-    createdAt: timestamp("createdAt", { mode: "date" }).notNull().defaultNow(),
-  },
-  (t) => [index("note_links_source_idx").on(t.sourceNoteId)]
-);
-
-// Chunked, embedded text for RAG. Every ingested document (file or note)
-// is split into chunks here.
+// Chunked, embedded text for RAG. Every ingested document is split into
+// chunks here — notes included, since a note written in Obsidian is just
+// a markdown file synced in via local-sync-cli (kind = 'local').
 export const chunks = pgTable(
   "chunks",
   {
