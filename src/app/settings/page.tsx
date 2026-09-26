@@ -53,7 +53,7 @@ export default async function SettingsPage() {
         </div>
 
         <div className="flex items-center justify-between rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-          <span>Microsoft 365 / OneDrive</span>
+          <span>Microsoft 365 / OneDrive / OneNote</span>
           {providers.has("microsoft-entra-id") ? (
             <SyncButton endpoint="/api/connectors/microsoft365/sync" label="Jetzt synchronisieren" />
           ) : (

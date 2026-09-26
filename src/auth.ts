@@ -23,6 +23,7 @@ const MICROSOFT_SCOPES = [
   "User.Read",
   "Files.Read.All",
   "Sites.Read.All",
+  "Notes.Read",
 ].join(" ");
 
 export const { handlers, auth, signIn, signOut } = NextAuth({

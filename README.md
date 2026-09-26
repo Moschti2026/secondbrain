@@ -1,6 +1,6 @@
 # Secondbrain
 
-Ein persönlicher Cloud-Assistent, der Google Drive, Microsoft 365/SharePoint und lokale Dateien (inkl. Obsidian-Notizen) durchsuchbar macht: Chat mit Quellenangaben (RAG) über alles zusammen.
+Ein persönlicher Cloud-Assistent, der Google Drive, Microsoft 365/SharePoint/OneNote und lokale Dateien (inkl. Obsidian-Notizen) durchsuchbar macht: Chat mit Quellenangaben (RAG) über alles zusammen.
 
 Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md). Notizen-Setup: [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md). Deployment: [DEPLOYMENT.md](./DEPLOYMENT.md). KI-Tools anbinden (ChatGPT/Claude.ai/Langdock): [CONNECTORS.md](./CONNECTORS.md).
 
@@ -9,6 +9,7 @@ Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md). Notizen-Setup: [O
 - **Chat/RAG** – Frage stellen, Antwort mit Zitaten aus deinen eigenen Dokumenten (`/chat`)
 - **Google Drive** – inkrementeller Sync über die Changes API
 - **Microsoft 365 / OneDrive** – inkrementeller Sync über die Graph Delta-API
+- **OneNote** – alle Notizbücher/Seiten werden mitgelesen (voller Re-Scan pro Sync, kein Delta-API dafür verfügbar)
 - **Lokale Dateien & Obsidian-Notizen** – kleines CLI-Tool (`local-sync-cli/`) synchronisiert einen Ordner (z.B. deinen Obsidian-Vault) auf deinem Rechner
 - **Remote-MCP-Server & ChatGPT-Action** – dieselben Daten auch aus Claude.ai, Langdock und ChatGPT abfragbar
 - Unterstützte Dateitypen: PDF, DOCX, TXT, Markdown, CSV, JSON (Google Docs/Sheets/Slides werden automatisch exportiert)
@@ -62,6 +63,7 @@ Vollständige Klick-für-Klick-Anleitung (Supabase, Google/Microsoft-OAuth, Verc
 
 ## Bekannte Grenzen (v1)
 
-- SharePoint-Bibliotheken (nur OneDrive) und das Löschen lokal entfernter Dateien sind noch nicht angebunden – siehe ARCHITECTURE.md, Abschnitt "Nicht enthalten / nächste Schritte".
+- SharePoint-Bibliotheken (nur OneDrive) sind noch nicht angebunden – siehe ARCHITECTURE.md, Abschnitt "Nicht enthalten / nächste Schritte".
+- Löschungen (lokale Dateien, OneNote-Seiten) werden nicht automatisch aus Secondbrain entfernt.
 - Kein automatisches Zusammenführen von Duplikaten über Quellen hinweg (z.B. dieselbe Datei in Drive und lokal).
 - Keine Volltextsuche als Fallback, wenn die Vektorsuche nichts Relevantes findet – die Antwort sagt dann ehrlich, dass nichts gefunden wurde.

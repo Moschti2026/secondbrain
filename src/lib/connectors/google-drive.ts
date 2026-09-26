@@ -4,6 +4,7 @@ import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
 import { ingestFile } from "@/lib/ingest";
 import { SUPPORTED_MIME_TYPES } from "@/lib/extract";
+import type { SyncSummary } from "./types";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB safety cap per file
@@ -64,13 +65,6 @@ async function downloadFile(accessToken: string, file: DriveFile): Promise<Buffe
 
   const res = await driveFetch(accessToken, path);
   return Buffer.from(await res.arrayBuffer());
-}
-
-export interface SyncSummary {
-  processed: number;
-  skipped: number;
-  removed: number;
-  errors: string[];
 }
 
 /** Incrementally syncs a user's Google Drive using the Changes API, so a

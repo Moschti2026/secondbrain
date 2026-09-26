@@ -2,6 +2,8 @@ import { db } from "@/db";
 import { accounts } from "@/db/schema";
 import { syncGoogleDrive } from "@/lib/connectors/google-drive";
 import { syncMicrosoft365 } from "@/lib/connectors/microsoft365";
+import { syncOneNote } from "@/lib/connectors/onenote";
+import { mergeSyncSummaries } from "@/lib/connectors/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -29,7 +31,9 @@ export async function GET(request: Request) {
       if (provider === "google") {
         results[`google_drive:${userId}`] = await syncGoogleDrive(userId);
       } else if (provider === "microsoft-entra-id") {
-        results[`microsoft365:${userId}`] = await syncMicrosoft365(userId);
+        const files = await syncMicrosoft365(userId);
+        const notes = await syncOneNote(userId);
+        results[`microsoft365:${userId}`] = mergeSyncSummaries([files, notes]);
       }
     } catch (err) {
       results[`${provider}:${userId}`] = { error: (err as Error).message };

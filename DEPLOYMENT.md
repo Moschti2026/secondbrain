@@ -25,7 +25,7 @@ Das hier sind die Schritte, die nur du selbst machen kannst (eigene Accounts, ei
 3. Redirect URI (Web) erstmal mit Platzhalter: `https://placeholder.vercel.app/api/auth/callback/microsoft-entra-id`.
 4. **Certificates & secrets → New client secret** → Wert sofort kopieren (wird nur einmal angezeigt) → `AUTH_MICROSOFT_ENTRA_ID_SECRET`.
 5. **Overview** → Application (client) ID kopieren → `AUTH_MICROSOFT_ENTRA_ID_ID`.
-6. **API permissions → Add a permission → Microsoft Graph → Delegated permissions**: `Files.Read.All`, `Sites.Read.All`, `User.Read`, `offline_access` hinzufügen. Falls dein Tenant das verlangt, admin consent erteilen (bei einem privaten/persönlichen Microsoft-Konto meist nicht nötig).
+6. **API permissions → Add a permission → Microsoft Graph → Delegated permissions**: `Files.Read.All`, `Sites.Read.All`, `Notes.Read`, `User.Read`, `offline_access` hinzufügen (`Notes.Read` wird für den OneNote-Sync gebraucht). Falls dein Tenant das verlangt, admin consent erteilen (bei einem privaten/persönlichen Microsoft-Konto meist nicht nötig).
 
 ## 4. Anthropic-API-Key (Claude, für Chat-Antworten)
 
