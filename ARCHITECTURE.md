@@ -8,12 +8,16 @@
                      │  (Vercel, App Router) │
                      └──────────┬───────────┘
                                 │
-        ┌───────────────┬──────────────┴──────┐
-        │               │                     │
-   Auth.js          Chat/RAG API          Ingest API
- (Google/MS OAuth)   /api/chat           /api/ingest
-        │               │                     │
-        └───────┬───────┴─────────────────────┘
+        ┌───────────────┬─────────┬──────────────┴──────┐
+        │               │         │                     │
+   Auth.js          Chat/RAG API  MCP-Server        Ingest API
+ (Google/MS OAuth)   /api/chat   /api/mcp/[key]     /api/ingest
+        │               │         │                     │
+        │               └────┬────┘                     │
+        │                    │  ▲                        │
+        │                    │  └── Claude.ai / Langdock  │
+        │                    │      / ChatGPT (Action)    │
+        └───────┬────────────┴──────────────────────────┘
                 │
          ┌──────▼──────┐ ┌───────────┐        ┌─────────────────┐
          │  Postgres    │ │  Claude   │        │ Voyage AI        │
@@ -63,6 +67,16 @@ Eine Cloud-App kann nicht direkt auf den Rechner des Nutzers zugreifen. Der loka
 2. Cosine-Similarity-Suche über `chunks` des angemeldeten Nutzers (pgvector `<=>`-Operator über Drizzles `cosineDistance`), Top 8, gefiltert auf Similarity ≥ 0.3.
 3. Gefundene Chunks werden nummeriert an Claude gegeben; das System-Prompt verlangt Zitate `[1]`, `[2]`, … und verbietet Antworten außerhalb der Quellen.
 4. Antwort + Quellenliste (Titel, Link) gehen an die UI.
+
+Die eigentliche Such-/Antwortlogik steckt in `src/lib/ask.ts` (`askSecondbrain` für die volle RAG-Antwort, `searchSecondbrain` für rohe Fundstellen ohne LLM-Synthese) — sowohl die Chat-UI als auch die externen Anbindungen unten rufen dieselben Funktionen auf, damit alle drei dieselbe Antwort geben.
+
+## Externe Anbindungen (Claude.ai, Langdock, ChatGPT)
+
+Setup-Anleitung: [CONNECTORS.md](./CONNECTORS.md).
+
+- **Remote-MCP-Server** (`src/app/api/mcp/[key]/route.ts`): Streamable-HTTP-MCP-Server (`@modelcontextprotocol/sdk`, `WebStandardStreamableHTTPServerTransport`, zustandslos — pro Request wird ein frischer Server erzeugt). Stellt zwei Tools bereit: `ask_secondbrain` und `search_secondbrain`. Die Authentifizierung steckt bewusst im URL-Pfad (`/api/mcp/<api-key>`) statt in einem Header, damit die Anbindung unabhängig von Claude.ai's (teils Beta-gated) Header-Auth oder einem OAuth-Setup funktioniert. Claude.ai und Langdock unterstützen beide MCP über Streamable HTTP und verbinden sich direkt mit dieser URL.
+- **ChatGPT Custom GPT Action** (`openapi/secondbrain-chatgpt-action.yaml`): OpenAPI-Spezifikation für `/api/chat`, Auth über den gleichen API-Key als `x-api-key`-Header oder `Authorization: Bearer`.
+- **Gemini / NotebookLM**: bieten aktuell keine Möglichkeit, eine eigene externe Datenquelle/Aktion einzubinden — keine Anbindung vorgesehen.
 
 ## Sicherheit / Mandantentrennung
 

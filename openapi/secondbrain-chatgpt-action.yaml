@@ -1,0 +1,64 @@
+openapi: 3.1.0
+info:
+  title: Secondbrain
+  description: >
+    Ask questions over the user's own indexed data (Google Drive,
+    Microsoft 365/SharePoint, local files and Obsidian notes) and get a
+    synthesized answer with citations to the source documents.
+  version: "1.0.0"
+servers:
+  # Replace with your deployed Secondbrain URL (no trailing slash).
+  - url: https://YOUR-SECONDBRAIN-DOMAIN.example
+paths:
+  /api/chat:
+    post:
+      operationId: askSecondbrain
+      summary: Ask Secondbrain a question
+      description: >
+        Searches the user's indexed documents and notes and returns an
+        answer grounded in them, with a numbered source list.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  description: The question to ask, in the user's own words.
+      responses:
+        "200":
+          description: Answer with citations.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        documentId:
+                          type: string
+                        title:
+                          type: string
+                        url:
+                          type: string
+                          nullable: true
+                        similarity:
+                          type: number
+        "401":
+          description: Missing or invalid API key.
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key

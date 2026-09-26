@@ -2,7 +2,7 @@
 
 Ein persönlicher Cloud-Assistent, der Google Drive, Microsoft 365/SharePoint und lokale Dateien (inkl. Obsidian-Notizen) durchsuchbar macht: Chat mit Quellenangaben (RAG) über alles zusammen.
 
-Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md). Notizen-Setup: [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md).
+Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md). Notizen-Setup: [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md). Deployment: [DEPLOYMENT.md](./DEPLOYMENT.md). KI-Tools anbinden (ChatGPT/Claude.ai/Langdock): [CONNECTORS.md](./CONNECTORS.md).
 
 ## Features
 
@@ -10,6 +10,7 @@ Details zur Architektur: [ARCHITECTURE.md](./ARCHITECTURE.md). Notizen-Setup: [O
 - **Google Drive** – inkrementeller Sync über die Changes API
 - **Microsoft 365 / OneDrive** – inkrementeller Sync über die Graph Delta-API
 - **Lokale Dateien & Obsidian-Notizen** – kleines CLI-Tool (`local-sync-cli/`) synchronisiert einen Ordner (z.B. deinen Obsidian-Vault) auf deinem Rechner
+- **Remote-MCP-Server & ChatGPT-Action** – dieselben Daten auch aus Claude.ai, Langdock und ChatGPT abfragbar
 - Unterstützte Dateitypen: PDF, DOCX, TXT, Markdown, CSV, JSON (Google Docs/Sheets/Slides werden automatisch exportiert)
 
 ## Stack
@@ -55,9 +56,9 @@ npm run dev
 
 Siehe [local-sync-cli/README.md](./local-sync-cli/README.md) bzw. [OBSIDIAN_SETUP.md](./OBSIDIAN_SETUP.md) für Notizen. Den API-Key dafür erzeugst du in der App unter **Einstellungen**.
 
-### 6. Deployment
+### 6. Deployment & KI-Tools anbinden
 
-Für Vercel: Repo importieren, Umgebungsvariablen setzen, `CRON_SECRET` setzen (für den in `vercel.json` konfigurierten periodischen Sync alle 6 Stunden).
+Vollständige Klick-für-Klick-Anleitung (Supabase, Google/Microsoft-OAuth, Vercel): [DEPLOYMENT.md](./DEPLOYMENT.md). Danach Secondbrain auch in Claude.ai, Langdock oder ChatGPT nutzbar machen: [CONNECTORS.md](./CONNECTORS.md).
 
 ## Bekannte Grenzen (v1)
 
