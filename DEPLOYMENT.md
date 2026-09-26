@@ -84,7 +84,7 @@ INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
 
 ## 8. Cron-Job für automatischen Re-Sync
 
-`vercel.json` ist bereits auf alle 6 Stunden konfiguriert. Vercels Cron-Jobs unterstützen je nach Tarif (Hobby/Pro) unterschiedliche Mindestintervalle — prüf das kurz in deinem Vercel-Dashboard unter **Settings → Cron Jobs**, ob die 6h-Frequenz auf deinem Plan läuft. Falls nicht: alternativ ein kostenloser externer Cron-Dienst (z.B. cron-job.org), der `GET https://<deine-domain>/api/cron/sync` mit Header `Authorization: Bearer <dein CRON_SECRET>` aufruft.
+`vercel.json` ist auf einmal täglich (03:00 UTC) konfiguriert — das ist die Grenze, die Vercels kostenloser Hobby-Plan für Cron-Jobs erlaubt (häufigere Intervalle wie "alle 6h" scheitern dort mit einem Fehler beim Deployment). Falls du auf den Pro-Plan wechselst, kannst du in `vercel.json` z.B. auf `"0 */6 * * *"` (alle 6h) umstellen. Alternativ, um trotzdem häufiger zu syncen ohne Plan-Wechsel: ein kostenloser externer Cron-Dienst (z.B. cron-job.org), der `GET https://<deine-domain>/api/cron/sync` mit Header `Authorization: Bearer <dein CRON_SECRET>` in kürzeren Abständen aufruft.
 
 ## 9. Loslegen
 

@@ -71,7 +71,7 @@ export default async function SettingsPage() {
         </div>
 
         <p className="text-xs text-neutral-400">
-          Eine automatische Re-Synchronisierung läuft zusätzlich alle 6 Stunden im Hintergrund (Cron-Job).
+          Eine automatische Re-Synchronisierung läuft zusätzlich einmal täglich im Hintergrund (Cron-Job).
         </p>
       </section>
 
