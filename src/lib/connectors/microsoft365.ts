@@ -8,6 +8,9 @@ import type { SyncSummary } from "./types";
 
 const GRAPH_API = "https://graph.microsoft.com/v1.0";
 const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB safety cap per file
+// See google-drive.ts for why this exists: a single HTTP request can't
+// safely assume a large first sync finishes within one call.
+const MAX_RUNTIME_MS = 45_000;
 
 interface DriveItem {
   id: string;
@@ -58,6 +61,7 @@ async function downloadItem(item: DriveItem): Promise<Buffer | null> {
  */
 export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
   const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [] };
+  const deadline = Date.now() + MAX_RUNTIME_MS;
 
   await db
     .insert(syncState)
@@ -80,6 +84,8 @@ export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
       state?.cursor ??
       `${GRAPH_API}/me/drive/root/delta?$select=id,name,webUrl,lastModifiedDateTime,size,file,folder,deleted`;
     let newCursor = state?.cursor ?? null;
+
+    let timedOut = false;
 
     while (url) {
       const res = await graphFetch(accessToken, url);
@@ -114,10 +120,25 @@ export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
         } catch (err) {
           summary.errors.push(`${item.name}: ${(err as Error).message}`);
         }
+
+        if (Date.now() > deadline) {
+          // Resume at this same page next time (re-fetching it is cheap;
+          // already-ingested items are skipped again via the content hash).
+          timedOut = true;
+          newCursor = url;
+          break;
+        }
       }
+
+      if (timedOut) break;
 
       if (page["@odata.deltaLink"]) newCursor = page["@odata.deltaLink"];
       url = page["@odata.nextLink"] ?? "";
+
+      if (Date.now() > deadline && url) {
+        newCursor = url;
+        break;
+      }
     }
 
     await db

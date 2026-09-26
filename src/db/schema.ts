@@ -144,7 +144,7 @@ export const syncState = pgTable(
     userId: uuid("userId")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    provider: text("provider").$type<"google_drive" | "microsoft365">().notNull(),
+    provider: text("provider").$type<"google_drive" | "microsoft365" | "onenote">().notNull(),
     cursor: text("cursor"),
     status: text("status").$type<"idle" | "syncing" | "error">().notNull().default("idle"),
     lastError: text("lastError"),

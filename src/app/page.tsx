@@ -51,7 +51,13 @@ export default async function HomePage() {
           <ul className="space-y-1 text-sm text-neutral-500">
             {syncRows.map((row) => (
               <li key={row.id}>
-                {row.provider === "google_drive" ? "Google Drive" : "Microsoft 365"}: {row.status}
+                {row.provider === "google_drive"
+                  ? "Google Drive"
+                  : row.provider === "onenote"
+                    ? "OneNote"
+                    : "Microsoft 365"}
+                : {row.status}
+                {row.cursor?.startsWith("backfill:") ? " (Ersteinlesen läuft, weiter klicken)" : ""}
                 {row.lastSyncedAt ? ` · zuletzt ${row.lastSyncedAt.toLocaleString("de-DE")}` : ""}
                 {row.lastError ? ` · Fehler: ${row.lastError}` : ""}
               </li>
