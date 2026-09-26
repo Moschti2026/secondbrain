@@ -13,7 +13,17 @@ export default function SyncButton({ endpoint, label }: { endpoint: string; labe
     setStatus(null);
     try {
       const res = await fetch(endpoint, { method: "POST" });
-      const body = await res.json();
+      const text = await res.text();
+      let body: { error?: string; processed?: number; skipped?: number; removed?: number; errors?: string[] };
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw new Error(
+          res.ok
+            ? "Unerwartete Antwort vom Server."
+            : `Serverfehler (${res.status}). Der Sync läuft eventuell zu lange für einen einzelnen Request — später erneut versuchen.`
+        );
+      }
       if (!res.ok) throw new Error(body.error ?? "Fehler");
       setStatus(
         `${body.processed} verarbeitet, ${body.skipped} unverändert, ${body.removed} entfernt` +

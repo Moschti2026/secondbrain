@@ -49,6 +49,64 @@ async function getStartPageToken(accessToken: string): Promise<string> {
   return body.startPageToken;
 }
 
+interface FilesListPage {
+  nextPageToken?: string;
+  files: DriveFile[];
+}
+
+/**
+ * The Changes API only reports changes going forward from a start token —
+ * it has no concept of "everything that already exists". A first-time sync
+ * has to walk the full file list once via files.list before it can switch
+ * to incremental Changes API polling.
+ */
+async function ingestExistingFiles(
+  userId: string,
+  accessToken: string,
+  summary: SyncSummary
+): Promise<void> {
+  let pageToken: string | undefined;
+
+  do {
+    const url =
+      "/files?pageSize=1000&q=" +
+      encodeURIComponent("trashed = false") +
+      "&fields=" +
+      encodeURIComponent("nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,trashed,size)") +
+      (pageToken ? `&pageToken=${pageToken}` : "");
+
+    const res = await driveFetch(accessToken, url);
+    const page = (await res.json()) as FilesListPage;
+
+    for (const file of page.files) {
+      try {
+        const buffer = await downloadFile(accessToken, file);
+        if (!buffer) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const result = await ingestFile({
+          userId,
+          kind: "google_drive",
+          externalId: file.id,
+          title: file.name,
+          mimeType: file.mimeType,
+          webUrl: file.webViewLink ?? null,
+          sourceUpdatedAt: file.modifiedTime ? new Date(file.modifiedTime) : null,
+          buffer,
+        });
+        if (result.skipped) summary.skipped += 1;
+        else summary.processed += 1;
+      } catch (err) {
+        summary.errors.push(`${file.name}: ${(err as Error).message}`);
+      }
+    }
+
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+}
+
 async function downloadFile(accessToken: string, file: DriveFile): Promise<Buffer | null> {
   const exportMime = GOOGLE_EXPORT_MIME[file.mimeType];
   if (file.mimeType === "application/vnd.google-apps.folder") return null;
@@ -89,8 +147,19 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
       .from(syncState)
       .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
 
-    let pageToken = state?.cursor ?? (await getStartPageToken(accessToken));
-    let newCursor = pageToken;
+    let pageToken: string;
+    let newCursor: string;
+
+    if (state?.cursor) {
+      pageToken = state.cursor;
+      newCursor = pageToken;
+    } else {
+      // First sync ever: back-fill everything that already exists before
+      // switching to incremental Changes API polling.
+      await ingestExistingFiles(userId, accessToken, summary);
+      pageToken = await getStartPageToken(accessToken);
+      newCursor = pageToken;
+    }
 
     do {
       const res = await driveFetch(
