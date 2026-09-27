@@ -75,7 +75,7 @@ async function downloadItem(item: DriveItem): Promise<Buffer | null> {
  * not a new OAuth consent).
  */
 export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
-  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [] };
+  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], done: true };
   const deadline = Date.now() + MAX_RUNTIME_MS;
 
   await db
@@ -146,13 +146,17 @@ export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
         }
       }
 
-      if (timedOut) break;
+      if (timedOut) {
+        summary.done = false;
+        break;
+      }
 
       if (page["@odata.deltaLink"]) newCursor = page["@odata.deltaLink"];
       url = page["@odata.nextLink"] ?? "";
 
       if (Date.now() > deadline && url) {
         newCursor = url;
+        summary.done = false;
         break;
       }
     }

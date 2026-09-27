@@ -46,7 +46,7 @@ async function graphFetch(accessToken: string, url: string) {
  * Secondbrain (same tradeoff as local-sync-cli, see its README).
  */
 export async function syncOneNote(userId: string): Promise<SyncSummary> {
-  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [] };
+  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], done: true };
   const deadline = Date.now() + MAX_RUNTIME_MS;
 
   const accessToken = await getValidAccessToken(userId, "microsoft-entra-id");
@@ -96,6 +96,7 @@ export async function syncOneNote(userId: string): Promise<SyncSummary> {
 
       if (Date.now() > deadline) {
         await persistCursor(userId, url);
+        summary.done = false;
         return summary;
       }
     }
@@ -103,6 +104,7 @@ export async function syncOneNote(userId: string): Promise<SyncSummary> {
     url = page["@odata.nextLink"];
     if (Date.now() > deadline && url) {
       await persistCursor(userId, url);
+      summary.done = false;
       return summary;
     }
   }

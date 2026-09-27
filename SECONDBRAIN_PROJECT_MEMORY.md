@@ -49,6 +49,15 @@ Nirgendwo im Repo, nur als Platzhalter in `.env.example` benannt und echt in **V
 
 Das Supabase-DB-Passwort wurde einmal rotiert (siehe Verlauf, Punkt 4) — aktueller Wert ausschließlich in der Vercel-`DATABASE_URL` und in Supabase selbst, nirgendwo sonst.
 
+## Automatischer Fortlauf beim Ersteinlesen (ergänzt nach dieser Notiz)
+
+Ein großes Drive/OneDrive braucht mehrere Zeitscheiben (~45s je Aufruf), bis der Ersteinlese-Lauf komplett durch ist — bisher musste man dafür manuell mehrfach auf den Sync-Button klicken. Jetzt:
+
+- `SyncSummary` (in `src/lib/connectors/types.ts`) hat ein `done`-Feld — `false` heißt "Zeitbudget erreicht, es gibt noch mehr zu tun".
+- **`SyncButton.tsx`** ruft den Sync-Endpunkt jetzt automatisch wiederholt auf, bis `done: true` zurückkommt (Sicherheitsgrenze: max. 300 Runden), zeigt live den kumulierten Fortschritt und hat einen "Stoppen"-Button.
+- **Der tägliche Cron-Job** (`src/app/api/cron/sync/route.ts`) macht dasselbe intern für jeden Nutzer, begrenzt auf ein Gesamt-Zeitbudget von ~250s pro Cron-Lauf (bleibt unter `maxDuration`), damit auch ohne Klicken über ein paar Nächte hinweg zuverlässig fertig eingelesen wird, ohne dass ein Nutzer mit einem riesigen Drive den ganzen Lauf blockiert (Deadline-Check vor jedem Nutzer).
+- `/api/chat` hat zusätzlich `maxDuration = 60` bekommen und einen try/catch — vorher konnte eine langsame Antwort (Embedding + Suche + Claude-Generierung) das 10s-Standardlimit von Vercel reißen, was der Chat als kryptischen "Unexpected end of JSON input"-Fehler anzeigte statt einer echten Fehlermeldung. `ChatPanel.tsx` parst die Antwort jetzt genauso defensiv wie `SyncButton.tsx`.
+
 ## Ordner-/Dokumentenansicht (ergänzt nach dieser Notiz)
 
 Der Chat beantwortet nur inhaltliche Fragen (semantische Suche über Text-Chunks) — für "welche Ordner/Dateien habe ich" gibt es keinen passenden Textinhalt zu finden, das ist strukturell, nicht inhaltlich. Ergänzt:

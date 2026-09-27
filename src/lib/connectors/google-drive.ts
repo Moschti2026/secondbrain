@@ -211,7 +211,7 @@ async function ingestExistingFiles(
 /** Incrementally syncs a user's Google Drive using the Changes API, so a
  * re-run only touches files that actually changed since the last cursor. */
 export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
-  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [] };
+  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], done: true };
   const deadline = Date.now() + MAX_RUNTIME_MS;
   const folderCache = new Map<string, FolderInfo | null>();
 
@@ -246,6 +246,7 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
           .update(syncState)
           .set({ cursor: backfill.resumeCursor, status: "idle", lastSyncedAt: new Date(), lastError: null })
           .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
+        summary.done = false;
         return summary;
       }
     }
@@ -301,6 +302,7 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
         // Large backlog of changes: persist progress and let the next call
         // (or the daily cron) continue from here instead of timing out.
         newCursor = pageToken;
+        summary.done = false;
         break;
       }
     }
