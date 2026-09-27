@@ -49,12 +49,24 @@ Nirgendwo im Repo, nur als Platzhalter in `.env.example` benannt und echt in **V
 
 Das Supabase-DB-Passwort wurde einmal rotiert (siehe Verlauf, Punkt 4) — aktueller Wert ausschließlich in der Vercel-`DATABASE_URL` und in Supabase selbst, nirgendwo sonst.
 
+## Ordner-/Dokumentenansicht (ergänzt nach dieser Notiz)
+
+Der Chat beantwortet nur inhaltliche Fragen (semantische Suche über Text-Chunks) — für "welche Ordner/Dateien habe ich" gibt es keinen passenden Textinhalt zu finden, das ist strukturell, nicht inhaltlich. Ergänzt:
+
+- `documents.folderPath` (Migration `0002_odd_leopardon.sql`) — pro Connector aufgelöst: Google Drive über die `parents`-Kette (gecacht je Sync-Lauf), OneDrive direkt aus `parentReference.path`, OneNote aus der Section, lokale Dateien aus dem Verzeichnisanteil von `localPath`.
+- Neue Seite **`/documents`**: echte, nach Quelle/Ordner gruppierte Verzeichnisansicht.
+- Neue API `/api/documents` + neues MCP-Tool `list_documents` + ergänzter ChatGPT-Action-Endpoint, damit auch externe KI-Tools strukturelle Fragen beantworten können.
+- `ingestFile()` aktualisiert jetzt auch bei unverändertem Inhalt (gleicher `contentHash`) Titel/Ordnerpfad/Link, statt komplett zu überspringen — sonst hätten bereits synchronisierte Dateien nie einen Ordnerpfad bekommen.
+- **Migration muss einmalig nachgetragen werden** (Datenbank existierte vor dieser Änderung): SQL in `DEPLOYMENT.md`, Abschnitt "Nachträgliches Schema-Update".
+- Nach der Migration einmal neu synchronisieren, damit bestehende Dokumente einen `folderPath` bekommen (automatisch beim nächsten Sync-Klick oder Cron-Lauf, kein Neu-Einlesen des Inhalts nötig).
+
 ## Offene / nächste Schritte
 
 1. Bestätigen, ob Drive-/Microsoft-365-Sync nach dem `unpdf`-Fix erfolgreich läuft (siehe Deployment-Status oben).
-2. Obsidian auf Andreas' Rechner einrichten, verbunden mit `local-sync-cli` → Anleitung: `OBSIDIAN_SETUP.md` (noch nicht begonnen).
-3. ChatGPT Custom GPT Action und/oder Claude.ai-/Langdock-MCP-Connector mit der echten Produktions-Domain einrichten → Anleitung: `CONNECTORS.md` (noch nicht begonnen).
-4. Nicht angebunden, aber vorbereitet: SharePoint-Site-Bibliotheken (Scope `Sites.Read.All` wird bereits anfragt, Connector-Code fehlt noch) — siehe `ARCHITECTURE.md`, Abschnitt "Nicht enthalten".
+2. **Neu:** Migration `0002_odd_leopardon.sql` in Supabase ausführen (SQL-Editor-SQL in `DEPLOYMENT.md`), dann neu deployen und einmal neu synchronisieren, damit die Ordneransicht unter `/documents` befüllt wird.
+3. Obsidian auf Andreas' Rechner einrichten, verbunden mit `local-sync-cli` → Anleitung: `OBSIDIAN_SETUP.md` (noch nicht begonnen).
+4. ChatGPT Custom GPT Action und/oder Claude.ai-/Langdock-MCP-Connector mit der echten Produktions-Domain einrichten → Anleitung: `CONNECTORS.md` (noch nicht begonnen).
+5. Nicht angebunden, aber vorbereitet: SharePoint-Site-Bibliotheken (Scope `Sites.Read.All` wird bereits anfragt, Connector-Code fehlt noch) — siehe `ARCHITECTURE.md`, Abschnitt "Nicht enthalten".
 
 ## Pflegehinweis
 

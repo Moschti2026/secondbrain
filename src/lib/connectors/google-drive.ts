@@ -34,6 +34,54 @@ interface DriveFile {
   webViewLink?: string;
   trashed?: boolean;
   size?: string;
+  parents?: string[];
+}
+
+interface FolderInfo {
+  name: string;
+  parents?: string[];
+}
+
+const FOLDER_PATH_DEPTH_LIMIT = 8;
+
+/**
+ * Walks a Drive file's `parents` chain up to build a human-readable folder
+ * path, e.g. ["<projekteId>"] -> "Projekte". Stops at the first ancestor
+ * with no `parents` field, which is the actual Drive/shared-drive root —
+ * its own name (the account name, or the shared drive's name) isn't a
+ * meaningful "folder" to show, so it's excluded from the path. Results are
+ * cached per sync run since many files share the same parent folders.
+ */
+async function resolveDriveFolderPath(
+  accessToken: string,
+  parents: string[] | undefined,
+  cache: Map<string, FolderInfo | null>
+): Promise<string | null> {
+  if (!parents || parents.length === 0) return null;
+
+  const segments: string[] = [];
+  let currentId: string | undefined = parents[0];
+
+  for (let depth = 0; currentId && depth < FOLDER_PATH_DEPTH_LIMIT; depth++) {
+    let info = cache.get(currentId);
+    if (info === undefined) {
+      try {
+        const res = await driveFetch(accessToken, `/files/${currentId}?fields=name,parents`);
+        const body = (await res.json()) as FolderInfo;
+        info = { name: body.name, parents: body.parents };
+      } catch {
+        info = null; // inaccessible (e.g. a shared drive root) — stop here
+      }
+      cache.set(currentId, info);
+    }
+    if (!info) break;
+
+    if (!info.parents || info.parents.length === 0) break; // reached the actual root
+    segments.unshift(info.name);
+    currentId = info.parents[0];
+  }
+
+  return segments.length > 0 ? `Google Drive/${segments.join("/")}` : "Google Drive";
 }
 
 interface ChangesPage {
@@ -100,7 +148,8 @@ async function ingestExistingFiles(
   accessToken: string,
   summary: SyncSummary,
   startToken: string,
-  deadline: number
+  deadline: number,
+  folderCache: Map<string, FolderInfo | null>
 ): Promise<BackfillResult> {
   let pageToken = startToken || undefined;
 
@@ -109,7 +158,7 @@ async function ingestExistingFiles(
       `/files?pageSize=${BACKFILL_PAGE_SIZE}&q=` +
       encodeURIComponent("trashed = false") +
       "&fields=" +
-      encodeURIComponent("nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,trashed,size)") +
+      encodeURIComponent("nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents)") +
       (pageToken ? `&pageToken=${pageToken}` : "");
 
     const res = await driveFetch(accessToken, url);
@@ -123,10 +172,12 @@ async function ingestExistingFiles(
           continue;
         }
 
+        const folderPath = await resolveDriveFolderPath(accessToken, file.parents, folderCache);
         const result = await ingestFile({
           userId,
           kind: "google_drive",
           externalId: file.id,
+          folderPath,
           title: file.name,
           mimeType: file.mimeType,
           webUrl: file.webViewLink ?? null,
@@ -162,6 +213,7 @@ async function ingestExistingFiles(
 export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
   const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [] };
   const deadline = Date.now() + MAX_RUNTIME_MS;
+  const folderCache = new Map<string, FolderInfo | null>();
 
   await db
     .insert(syncState)
@@ -187,7 +239,7 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
       // (time-boxed) call: back-fill existing files before switching to
       // incremental Changes API polling.
       const startToken = cursor?.slice(BACKFILL_CURSOR_PREFIX.length) ?? "";
-      const backfill = await ingestExistingFiles(userId, accessToken, summary, startToken, deadline);
+      const backfill = await ingestExistingFiles(userId, accessToken, summary, startToken, deadline, folderCache);
 
       if (!backfill.done) {
         await db
@@ -205,7 +257,7 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
     while (pageToken) {
       const res = await driveFetch(
         accessToken,
-        `/changes?pageToken=${pageToken}&pageSize=100&includeRemoved=true&fields=nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,webViewLink,trashed,size))`
+        `/changes?pageToken=${pageToken}&pageSize=100&includeRemoved=true&fields=nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents))`
       );
       const page = (await res.json()) as ChangesPage;
 
@@ -223,10 +275,12 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
             continue;
           }
 
+          const folderPath = await resolveDriveFolderPath(accessToken, change.file.parents, folderCache);
           const result = await ingestFile({
             userId,
             kind: "google_drive",
             externalId: change.file.id,
+            folderPath,
             title: change.file.name,
             mimeType: change.file.mimeType,
             webUrl: change.file.webViewLink ?? null,

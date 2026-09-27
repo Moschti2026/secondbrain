@@ -93,6 +93,12 @@ export const documents = pgTable(
     // Relative path for local-sync files, so re-uploads of the same file
     // update the same document instead of duplicating it.
     localPath: text("localPath"),
+    // Human-readable folder path, prefixed with the source ("Google
+    // Drive/Projekte", "OneDrive/Kunden/X", "OneNote/Notizbuch", "Lokal/…"),
+    // so the app can show an actual folder/document listing instead of
+    // relying on semantic chunk search (which can't answer "what folders
+    // exist" — that's a structural question, not a content match).
+    folderPath: text("folderPath"),
     title: text("title").notNull(),
     mimeType: text("mimeType"),
     webUrl: text("webUrl"),

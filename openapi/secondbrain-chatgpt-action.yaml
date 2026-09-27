@@ -56,6 +56,42 @@ paths:
                           type: number
         "401":
           description: Missing or invalid API key.
+  /api/documents:
+    get:
+      operationId: listSecondbrainDocuments
+      summary: List all indexed documents and their folder paths
+      description: >
+        Returns every indexed document with its folder path (e.g. "Google
+        Drive/Projekte/Vertrag.pdf"). Use this for structural questions
+        about what folders or files exist — askSecondbrain only matches on
+        content, so it can't answer "what folders do I have".
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Document listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        title:
+                          type: string
+                        folderPath:
+                          type: string
+                          nullable: true
+                        webUrl:
+                          type: string
+                          nullable: true
+        "401":
+          description: Missing or invalid API key.
 components:
   securitySchemes:
     ApiKeyAuth:

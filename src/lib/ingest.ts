@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { chunks, documents, type DocumentKind } from "@/db/schema";
@@ -13,11 +14,24 @@ export interface IngestFileInput {
   kind: Extract<DocumentKind, "google_drive" | "microsoft365" | "local">;
   externalId?: string | null;
   localPath?: string | null;
+  /** Human-readable folder path, e.g. "Google Drive/Projekte". Connectors
+   * resolve this themselves; for "local" it's derived from localPath below
+   * if not given. */
+  folderPath?: string | null;
   title: string;
   mimeType: string | null;
   webUrl?: string | null;
   sourceUpdatedAt?: Date | null;
   buffer: Buffer;
+}
+
+function resolveFolderPath(input: IngestFileInput): string | null {
+  if (input.folderPath !== undefined) return input.folderPath;
+  if (input.kind === "local" && input.localPath) {
+    const dir = path.dirname(input.localPath);
+    return dir === "." ? "Lokal" : `Lokal/${dir}`;
+  }
+  return null;
 }
 
 export interface IngestResult {
@@ -61,7 +75,23 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
           )
     );
 
+  const folderPath = resolveFolderPath(input);
+
   if (existing && existing.contentHash === contentHash) {
+    // Content unchanged: still refresh cheap metadata (title, folder path,
+    // link — a file can be renamed or moved without its content changing)
+    // so a listing stays accurate, but skip the expensive extract/chunk/
+    // embed work below.
+    await db
+      .update(documents)
+      .set({
+        title: input.title,
+        mimeType: input.mimeType,
+        webUrl: input.webUrl ?? null,
+        folderPath,
+        sourceUpdatedAt: input.sourceUpdatedAt ?? null,
+      })
+      .where(eq(documents.id, existing.id));
     return { documentId: existing.id, skipped: true, chunkCount: 0 };
   }
 
@@ -74,6 +104,7 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
         title: input.title,
         mimeType: input.mimeType,
         webUrl: input.webUrl ?? null,
+        folderPath,
         contentHash,
         sourceUpdatedAt: input.sourceUpdatedAt ?? null,
         indexError: null,
@@ -86,6 +117,7 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
       kind: input.kind,
       externalId: input.externalId ?? null,
       localPath: input.localPath ?? null,
+      folderPath,
       title: input.title,
       mimeType: input.mimeType,
       webUrl: input.webUrl ?? null,

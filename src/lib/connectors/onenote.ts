@@ -16,6 +16,7 @@ interface OneNotePage {
   title: string;
   lastModifiedDateTime?: string;
   links?: { oneNoteWebUrl?: { href?: string } };
+  parentSection?: { displayName?: string };
 }
 
 interface OneNotePagesResponse {
@@ -57,7 +58,8 @@ export async function syncOneNote(userId: string): Promise<SyncSummary> {
     .where(and(eq(syncState.userId, userId), eq(syncState.provider, "onenote")));
 
   let url: string | undefined =
-    state?.cursor || `${GRAPH_API}/me/onenote/pages?$top=${PAGE_SIZE}&$select=id,title,lastModifiedDateTime,links`;
+    state?.cursor ||
+    `${GRAPH_API}/me/onenote/pages?$top=${PAGE_SIZE}&$select=id,title,lastModifiedDateTime,links&$expand=parentSection($select=displayName)`;
 
   while (url) {
     const res = await graphFetch(accessToken, url);
@@ -75,6 +77,9 @@ export async function syncOneNote(userId: string): Promise<SyncSummary> {
           userId,
           kind: "microsoft365",
           externalId: `onenote:${notePage.id}`,
+          folderPath: notePage.parentSection?.displayName
+            ? `OneNote/${notePage.parentSection.displayName}`
+            : "OneNote",
           title: notePage.title || "Ohne Titel",
           mimeType: "text/html",
           webUrl: notePage.links?.oneNoteWebUrl?.href ?? null,

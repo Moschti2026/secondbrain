@@ -21,7 +21,22 @@ interface DriveItem {
   file?: { mimeType: string };
   folder?: unknown;
   deleted?: unknown;
+  parentReference?: { path?: string };
   "@microsoft.graph.downloadUrl"?: string;
+}
+
+/**
+ * Graph's parentReference.path looks like "/drive/root:/Projekte/Sub" (or
+ * "/drives/<id>/root:/..." for a different drive). Strip the "root:"
+ * prefix to get the actual folder path, "" for items sitting at the drive
+ * root.
+ */
+function parseOneDriveFolderPath(parentPath: string | undefined): string | null {
+  if (!parentPath) return null;
+  const marker = "root:";
+  const idx = parentPath.indexOf(marker);
+  const relative = idx === -1 ? "" : parentPath.slice(idx + marker.length).replace(/^\/+/, "");
+  return relative ? `OneDrive/${relative}` : "OneDrive";
 }
 
 interface DeltaPage {
@@ -82,7 +97,7 @@ export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
 
     let url =
       state?.cursor ??
-      `${GRAPH_API}/me/drive/root/delta?$select=id,name,webUrl,lastModifiedDateTime,size,file,folder,deleted`;
+      `${GRAPH_API}/me/drive/root/delta?$select=id,name,webUrl,lastModifiedDateTime,size,file,folder,deleted,parentReference`;
     let newCursor = state?.cursor ?? null;
 
     let timedOut = false;
@@ -109,6 +124,7 @@ export async function syncMicrosoft365(userId: string): Promise<SyncSummary> {
             userId,
             kind: "microsoft365",
             externalId: item.id,
+            folderPath: parseOneDriveFolderPath(item.parentReference?.path),
             title: item.name,
             mimeType: item.file?.mimeType ?? null,
             webUrl: item.webUrl ?? null,

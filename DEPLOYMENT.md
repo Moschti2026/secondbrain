@@ -59,7 +59,7 @@ npm install
 npx drizzle-kit migrate
 ```
 
-**Alternative, falls kein direkter Postgres-Zugriff möglich ist** (z.B. Cloud-Sandbox ohne rohe TCP-Verbindungen — Postgres läuft nicht über HTTPS): Den Inhalt jeder Datei aus `drizzle/*.sql` (aktuell `0000_*.sql`, dann `0001_*.sql`) der Reihe nach in Supabase → **SQL Editor** → **New query** einfügen und ausführen.
+**Alternative, falls kein direkter Postgres-Zugriff möglich ist** (z.B. Cloud-Sandbox ohne rohe TCP-Verbindungen — Postgres läuft nicht über HTTPS): Den Inhalt jeder Datei aus `drizzle/*.sql` (aktuell `0000_*.sql`, `0001_*.sql`, dann `0002_*.sql`) der Reihe nach in Supabase → **SQL Editor** → **New query** einfügen und ausführen.
 
 Danach zusätzlich einmalig RLS für die vier Auth.js-Tabellen aktivieren (aus Typgründen nicht in `schema.ts` deklarierbar, siehe Kommentar dort — trotzdem am Datenbank-Server sinnvoll) und das Migrations-Tracking von drizzle-kit nachtragen, damit ein späteres `drizzle-kit migrate` nichts doppelt anwendet:
 
@@ -79,7 +79,17 @@ CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (
 -- ihres Inhalts und dem "when"-Timestamp aus drizzle/meta/_journal.json.
 INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
   ('<sha256-hex des Inhalts von 0000_*.sql>', <when aus dem Journal>),
-  ('<sha256-hex des Inhalts von 0001_*.sql>', <when aus dem Journal>);
+  ('<sha256-hex des Inhalts von 0001_*.sql>', <when aus dem Journal>),
+  ('<sha256-hex des Inhalts von 0002_*.sql>', <when aus dem Journal>);
+```
+
+**Nachträgliches Schema-Update (Ordnerpfad-Spalte, `0002_odd_leopardon.sql`):** falls die Datenbank schon vor dieser Migration eingerichtet wurde, im SQL-Editor nachtragen:
+
+```sql
+ALTER TABLE "documents" ADD COLUMN "folderPath" text;
+
+INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
+  ('77c77800f25dbd345f266d2f17b8f6e31147e37f4196362263755978fcb9a223', 1790524259157);
 ```
 
 ## 8. Cron-Job für automatischen Re-Sync

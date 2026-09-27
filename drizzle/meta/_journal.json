@@ -15,6 +15,13 @@
       "when": 1790457343967,
       "tag": "0001_windy_klaw",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790524259157,
+      "tag": "0002_odd_leopardon",
+      "breakpoints": true
     }
   ]
 }

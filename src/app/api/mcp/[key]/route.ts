@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { resolveApiKey } from "@/lib/apikey";
 import { askSecondbrain, searchSecondbrain } from "@/lib/ask";
+import { listDocuments } from "@/lib/documents";
 
 export const runtime = "nodejs";
 
@@ -54,6 +55,26 @@ function buildServer(userId: string) {
             `[${i + 1}] ${r.title}${r.url ? ` — ${r.url}` : ""} (Relevanz: ${r.similarity.toFixed(2)})\n${r.content}`
         )
         .join("\n\n---\n\n");
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.registerTool(
+    "list_documents",
+    {
+      title: "List Secondbrain Documents",
+      description:
+        "Lists every indexed document with its folder path (e.g. 'Google Drive/Projekte/Vertrag.pdf'). Use this for structural questions about what folders or files exist — 'ask_secondbrain'/'search_secondbrain' only match on content, so they can't answer that.",
+      inputSchema: {},
+    },
+    async () => {
+      const docs = await listDocuments(userId);
+      if (docs.length === 0) {
+        return { content: [{ type: "text", text: "Keine Dokumente indexiert." }] };
+      }
+      const text = docs
+        .map((d) => `${d.folderPath ?? "Unbekannt"}/${d.title}${d.webUrl ? ` — ${d.webUrl}` : ""}`)
+        .join("\n");
       return { content: [{ type: "text", text }] };
     }
   );
