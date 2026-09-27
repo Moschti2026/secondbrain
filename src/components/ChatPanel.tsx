@@ -37,12 +37,22 @@ export default function ChatPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: q }),
       });
-      const body = await res.json();
+      const text = await res.text();
+      let body: { error?: string; answer?: string; sources?: Source[] };
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw new Error(
+          res.ok
+            ? "Unerwartete Antwort vom Server."
+            : `Serverfehler (${res.status}). Die Anfrage hat eventuell zu lange gedauert — bitte erneut versuchen.`
+        );
+      }
       if (!res.ok) throw new Error(body.error ?? "Unbekannter Fehler");
 
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: body.answer, sources: body.sources },
+        { role: "assistant", content: body.answer ?? "", sources: body.sources },
       ]);
     } catch (err) {
       setError((err as Error).message);

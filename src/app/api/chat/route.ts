@@ -2,6 +2,11 @@ import { resolveUserId } from "@/lib/request-auth";
 import { askSecondbrain } from "@/lib/ask";
 
 export const runtime = "nodejs";
+// Embedding + vector search + Claude generation can take longer than
+// Vercel's 10s default for some questions, which otherwise gets cut off
+// with a non-JSON gateway error the client can't parse. 60s is the max
+// duration allowed on the Hobby plan.
+export const maxDuration = 60;
 
 /**
  * Used by the browser chat UI (session cookie), and by external assistants
@@ -16,6 +21,10 @@ export async function POST(request: Request) {
   const question = body.question?.trim();
   if (!question) return Response.json({ error: "missing question" }, { status: 400 });
 
-  const result = await askSecondbrain(userId, question);
-  return Response.json(result);
+  try {
+    const result = await askSecondbrain(userId, question);
+    return Response.json(result);
+  } catch (err) {
+    return Response.json({ error: (err as Error).message }, { status: 500 });
+  }
 }
