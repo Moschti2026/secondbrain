@@ -40,7 +40,7 @@ Chronologisch, damit dieselben Fehler nicht wiederholt werden:
 - Produktiv live unter `https://secondbrain-navy-pi.vercel.app` (Login, Dashboard bestätigt funktionsfähig).
 - Alle 6 externen Accounts eingerichtet: Supabase, Google Cloud, Azure/Entra ID, Anthropic, Voyage AI, Vercel.
 - Letzter Deploy zum Zeitpunkt dieser Notiz: Commit `3471ae5` ("Replace pdf-parse with unpdf"), Vercel-Deployment `dpl_HY7Rb8i8ZnnYehqNjgZqVXcd7g6p`, Status `READY`.
-- **Offen/unbestätigt:** ob der Google-Drive- bzw. Microsoft-365-Sync nach dem `unpdf`-Fix jetzt tatsächlich durchläuft — Andreas wurde gebeten, beide Sync-Buttons erneut zu testen, Ergebnis steht noch aus.
+- **Bestätigt:** Google-Drive-Sync läuft nach dem `unpdf`-Fix — 182 indexierte Dateien mit echtem Inhalt sichtbar in der Ordneransicht (`/documents`). Microsoft-365-Sync-Ergebnis noch nicht separat bestätigt.
 
 ## Secrets
 
