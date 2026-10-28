@@ -10,6 +10,8 @@ const MIME_BY_EXT: Record<string, string> = {
   ".markdown": "text/markdown",
   ".csv": "text/csv",
   ".json": "application/json",
+  ".html": "text/html",
+  ".htm": "text/html",
 };
 
 function readConfig() {

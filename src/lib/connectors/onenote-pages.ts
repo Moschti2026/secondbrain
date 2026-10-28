@@ -242,6 +242,10 @@ export async function walkOneNote(
       const pages = Array.isArray(collection.value) ? collection.value : [];
       for (const notePage of pages) {
         if (!notePage?.id) continue;
+        if (deps.outOfTime()) {
+          state.pagesUrl = pagesUrl;
+          return { resume: state, incomplete: true };
+        }
         try {
           await deps.onPage(notePage, section);
         } catch (err) {

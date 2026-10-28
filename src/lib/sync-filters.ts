@@ -1,5 +1,5 @@
 import path from "node:path";
-import { SUPPORTED_MIME_TYPES } from "@/lib/extract";
+import { SUPPORTED_MIME_TYPES, normalizeMimeType } from "@/lib/extract";
 
 /** Folder names that are tool configuration or VCS internals, not notes. */
 const IGNORED_SEGMENTS = new Set([
@@ -43,16 +43,14 @@ const EXTENSION_MIME: Record<string, string> = {
   ".htm": "text/html",
 };
 
-export function normalizeMimeType(mimeType: string | null | undefined): string {
-  return (mimeType ?? "").split(";")[0].trim().toLowerCase();
-}
-
 /**
  * Drive and OneDrive label the same Markdown file as text/markdown,
  * text/x-markdown, text/plain, or application/octet-stream. The extension
- * wins for .md/.markdown so none of those reports drop the file. Other
- * types still follow the reported MIME, with a filename fallback when the
- * provider sent a generic binary type.
+ * wins for .md/.markdown so none of those reports drop the file. For every
+ * other known extension (.pdf, .txt, .html, .docx) the extension also wins
+ * when the reported type is missing or not one we can index
+ * (`application/x-pdf`, a generic binary type, …). A reported type we
+ * already support is kept.
  */
 export function resolveIngestMimeType(
   fileName: string,
@@ -69,17 +67,8 @@ export function resolveIngestMimeType(
   }
 
   const fromExt = EXTENSION_MIME[path.extname(fileName).toLowerCase()];
-  if (
-    fromExt &&
-    (!reportedType ||
-      reportedType === "application/octet-stream" ||
-      reportedType === "application/binary" ||
-      reportedType === "binary/octet-stream")
-  ) {
-    return fromExt;
-  }
-
-  return reportedType || fromExt || null;
+  if (fromExt) return fromExt;
+  return reportedType || null;
 }
 
 export function isIngestableMime(mimeType: string | null | undefined): boolean {

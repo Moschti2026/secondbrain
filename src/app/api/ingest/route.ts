@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { resolveUserId } from "@/lib/request-auth";
 import { ingestFile } from "@/lib/ingest";
+import { resolveIngestMimeType } from "@/lib/sync-filters";
 
 export const runtime = "nodejs";
 
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
       kind: "local",
       localPath,
       title,
-      mimeType: file.type || null,
+      mimeType: resolveIngestMimeType(file.name, file.type || null),
       sourceUpdatedAt: new Date(),
       buffer,
     });

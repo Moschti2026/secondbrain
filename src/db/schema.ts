@@ -8,6 +8,7 @@ import {
   vector,
   index,
   uniqueIndex,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 
@@ -106,11 +107,26 @@ export const documents = pgTable(
     sourceUpdatedAt: timestamp("sourceUpdatedAt", { mode: "date" }),
     indexedAt: timestamp("indexedAt", { mode: "date" }),
     indexError: text("indexError"),
+    // How often extraction or embedding has failed for the current bytes.
+    // Reset when the content hash changes. At MAX_INDEX_ATTEMPTS the row
+    // is left settled so a poison file cannot block every later sync.
+    indexAttempts: integer("indexAttempts").notNull().default(0),
+    // Set when this row is a copy of another document with the same bytes.
+    // Chunks and embeddings live only on the canonical row (aliasOf is null).
+    // Deleting the canonical row clears this link and indexedAt via the
+    // trigger in drizzle/0003_document_alias_and_index_attempts.sql.
+    aliasOf: uuid("aliasOf"),
     createdAt: timestamp("createdAt", { mode: "date" }).notNull().defaultNow(),
   },
   (t) => [
     index("documents_user_idx").on(t.userId),
     uniqueIndex("documents_user_external_idx").on(t.userId, t.kind, t.externalId),
+    index("documents_user_content_hash_idx").on(t.userId, t.contentHash),
+    foreignKey({
+      columns: [t.aliasOf],
+      foreignColumns: [t.id],
+      name: "documents_aliasOf_documents_id_fk",
+    }).onDelete("set null"),
   ]
 ).enableRLS();
 

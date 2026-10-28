@@ -64,6 +64,18 @@ describe("markdown and vault filters", () => {
     }
   });
 
+  it("trusts a known extension when the reported type is not indexable", () => {
+    assert.equal(resolveIngestMimeType("scan.pdf", "application/x-pdf"), "application/pdf");
+    assert.equal(resolveIngestMimeType("notiz.txt", "application/octet-stream"), "text/plain");
+    assert.equal(resolveIngestMimeType("seite.html", ""), "text/html");
+    assert.equal(
+      resolveIngestMimeType("brief.docx", "application/octet-stream"),
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    assert.equal(isIngestableMime("text/plain; charset=utf-8"), true);
+    assert.equal(isIngestableMime("text/markdown"), true);
+  });
+
   it("does not drop markdown because of the binary size cap", () => {
     assert.equal(shouldSkipForSize("179.md", 50 * 1024 * 1024, 20 * 1024 * 1024), false);
     assert.equal(shouldSkipForSize("scan.pdf", 50 * 1024 * 1024, 20 * 1024 * 1024), true);
