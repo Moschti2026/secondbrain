@@ -53,11 +53,16 @@ async function embedAllChunks(contents: string[]): Promise<number[][]> {
   return vectors;
 }
 
+function clipError(message: string): string {
+  return message.slice(0, 500);
+}
+
 /**
  * Upserts a document (Drive file / Graph file / local-sync file) and
- * (re-)indexes it for RAG. Skips re-embedding when the content hash hasn't
- * changed since the last sync, which keeps re-syncs of unchanged files
- * nearly free.
+ * (re-)indexes it for RAG. Re-embedding is skipped only when the content
+ * hash matches AND a previous run finished indexing (`indexedAt` is set).
+ * A hash written before a failed embedding does not count as done, so the
+ * next sync retries it.
  */
 export async function ingestFile(input: IngestFileInput): Promise<IngestResult> {
   const contentHash = hashBuffer(input.buffer);
@@ -77,11 +82,11 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
 
   const folderPath = resolveFolderPath(input);
 
-  if (existing && existing.contentHash === contentHash) {
-    // Content unchanged: still refresh cheap metadata (title, folder path,
-    // link — a file can be renamed or moved without its content changing)
-    // so a listing stays accurate, but skip the expensive extract/chunk/
-    // embed work below.
+  if (existing && existing.contentHash === contentHash && existing.indexedAt) {
+    // Content unchanged and already indexed: still refresh cheap metadata
+    // (title, folder path, link — a file can be renamed or moved without
+    // its content changing) so a listing stays accurate, but skip the
+    // expensive extract/chunk/embed work below.
     await db
       .update(documents)
       .set({
@@ -107,6 +112,9 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
         folderPath,
         contentHash,
         sourceUpdatedAt: input.sourceUpdatedAt ?? null,
+        // Cleared until this attempt finishes. A crash or a 429 must not
+        // leave the previous indexedAt in place next to the new hash.
+        indexedAt: null,
         indexError: null,
       })
       .where(eq(documents.id, documentId));
@@ -132,7 +140,10 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
   } catch (err) {
     await db
       .update(documents)
-      .set({ indexError: `extract failed: ${(err as Error).message}` })
+      .set({
+        indexedAt: null,
+        indexError: clipError(`extract failed: ${(err as Error).message}`),
+      })
       .where(eq(documents.id, documentId));
     return { documentId, skipped: false, chunkCount: 0 };
   }
@@ -140,6 +151,7 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
   if (!text) {
     // Unsupported file type (image, binary, ...): keep the document row so
     // it shows up in file listings, just without searchable chunks.
+    // indexedAt is set so the pending-index queue does not retry it.
     await db
       .update(documents)
       .set({ indexedAt: new Date(), indexError: "unsupported file type, not indexed" })
@@ -148,7 +160,19 @@ export async function ingestFile(input: IngestFileInput): Promise<IngestResult> 
   }
 
   const pieces = chunkText(text);
-  const vectors = await embedAllChunks(pieces.map((p) => p.content));
+  let vectors: number[][];
+  try {
+    vectors = await embedAllChunks(pieces.map((p) => p.content));
+  } catch (err) {
+    await db
+      .update(documents)
+      .set({
+        indexedAt: null,
+        indexError: clipError(`embed failed: ${(err as Error).message}`),
+      })
+      .where(eq(documents.id, documentId));
+    throw err;
+  }
 
   await db.delete(chunks).where(eq(chunks.documentId, documentId));
 

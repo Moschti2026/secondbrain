@@ -3,12 +3,29 @@ import { db } from "@/db";
 import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
 import { ingestFile } from "@/lib/ingest";
-import { SUPPORTED_MIME_TYPES } from "@/lib/extract";
+import { EmbeddingRateLimitError } from "@/lib/embeddings";
+import { listPendingDocuments, settleUnindexed } from "@/lib/index-queue";
+import {
+  DRIVE_CURSOR_VERSION,
+  encodeDrivePageToken,
+  isInvalidDrivePageToken,
+  readDriveCursor,
+  writeDriveBackfillCursor,
+  writeDriveChangesCursor,
+} from "@/lib/drive-cursor";
+import {
+  isIgnoredVaultPath,
+  isIngestableMime,
+  resolveIngestMimeType,
+  shouldSkipForSize,
+} from "@/lib/sync-filters";
+import { SyncInterrupted } from "./sync-control";
 import type { SyncSummary } from "./types";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB safety cap per file
+const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB safety cap per non-markdown file
 const BACKFILL_PAGE_SIZE = 50;
+const PENDING_BATCH = 8;
 
 // A single HTTP request has a limited lifetime end-to-end (the platform's
 // gateway, not just our own function timeout). A first sync over a large
@@ -16,7 +33,6 @@ const BACKFILL_PAGE_SIZE = 50;
 // time-boxed slices and persists a resume point — repeated clicks (or the
 // daily cron) pick up where the last one left off instead of failing.
 const MAX_RUNTIME_MS = 45_000;
-const BACKFILL_CURSOR_PREFIX = "backfill:";
 
 // Google-native formats have no raw bytes; export them to a plain-text
 // equivalent instead of downloading via alt=media.
@@ -44,6 +60,30 @@ interface FolderInfo {
 
 const FOLDER_PATH_DEPTH_LIMIT = 8;
 
+type PageTokenOrigin = "stored" | "fresh" | "none";
+
+class DriveRequestError extends Error {
+  readonly status: number;
+  readonly body: string;
+  readonly pageTokenOrigin: PageTokenOrigin;
+
+  constructor(status: number, body: string, pageTokenOrigin: PageTokenOrigin) {
+    super(`Google Drive API request failed: ${status} ${body}`.slice(0, 500));
+    this.name = "DriveRequestError";
+    this.status = status;
+    this.body = body;
+    this.pageTokenOrigin = pageTokenOrigin;
+  }
+}
+
+function isStoredPageTokenRejected(err: unknown): err is DriveRequestError {
+  return (
+    err instanceof DriveRequestError &&
+    err.pageTokenOrigin === "stored" &&
+    isInvalidDrivePageToken(err.status, err.body)
+  );
+}
+
 /**
  * Walks a Drive file's `parents` chain up to build a human-readable folder
  * path, e.g. ["<projekteId>"] -> "Projekte". Stops at the first ancestor
@@ -66,7 +106,11 @@ async function resolveDriveFolderPath(
     let info = cache.get(currentId);
     if (info === undefined) {
       try {
-        const res = await driveFetch(accessToken, `/files/${currentId}?fields=name,parents`);
+        const res = await driveFetch(
+          accessToken,
+          `/files/${encodeURIComponent(currentId)}?fields=name,parents&supportsAllDrives=true`,
+          "none"
+        );
         const body = (await res.json()) as FolderInfo;
         info = { name: body.name, parents: body.parents };
       } catch {
@@ -95,53 +139,110 @@ interface FilesListPage {
   files: DriveFile[];
 }
 
-async function driveFetch(accessToken: string, path: string) {
+function driveListQuery(params: Record<string, string>, pageToken?: string): string {
+  const search = new URLSearchParams(params);
+  const base = search.toString();
+  if (!pageToken) return base;
+  const encoded = encodeDrivePageToken(pageToken);
+  return base ? `${base}&pageToken=${encoded}` : `pageToken=${encoded}`;
+}
+
+async function driveFetch(accessToken: string, path: string, pageTokenOrigin: PageTokenOrigin) {
   const res = await fetch(`${DRIVE_API}${path}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
-    throw new Error(`Google Drive API ${path} failed: ${res.status} ${await res.text()}`);
+    throw new DriveRequestError(res.status, await res.text(), pageTokenOrigin);
   }
   return res;
 }
 
 async function getStartPageToken(accessToken: string): Promise<string> {
-  const res = await driveFetch(accessToken, "/changes/startPageToken");
+  const res = await driveFetch(
+    accessToken,
+    `/changes/startPageToken?supportsAllDrives=true`,
+    "none"
+  );
   const body = (await res.json()) as { startPageToken: string };
   return body.startPageToken;
 }
 
-async function downloadFile(accessToken: string, file: DriveFile): Promise<Buffer | null> {
+async function downloadFile(
+  accessToken: string,
+  file: DriveFile
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
   const exportMime = GOOGLE_EXPORT_MIME[file.mimeType];
   if (file.mimeType === "application/vnd.google-apps.folder") return null;
   if (file.mimeType.startsWith("application/vnd.google-apps.") && !exportMime) {
     return null; // forms, drawings, apps-script, ... — nothing text-like to extract
   }
 
-  if (!exportMime && !SUPPORTED_MIME_TYPES.includes(file.mimeType)) return null;
-  if (file.size && Number(file.size) > MAX_FILE_BYTES) return null;
+  const ingestMime = exportMime
+    ? file.mimeType
+    : resolveIngestMimeType(file.name, file.mimeType);
+  if (!exportMime && !isIngestableMime(ingestMime)) return null;
+
+  const size = file.size ? Number(file.size) : null;
+  if (shouldSkipForSize(file.name, size, MAX_FILE_BYTES)) return null;
 
   const path = exportMime
-    ? `/files/${file.id}/export?mimeType=${encodeURIComponent(exportMime)}`
-    : `/files/${file.id}?alt=media`;
+    ? `/files/${encodeURIComponent(file.id)}/export?mimeType=${encodeURIComponent(exportMime)}&supportsAllDrives=true`
+    : `/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`;
 
-  const res = await driveFetch(accessToken, path);
-  return Buffer.from(await res.arrayBuffer());
+  const res = await driveFetch(accessToken, path, "none");
+  return { buffer: Buffer.from(await res.arrayBuffer()), mimeType: ingestMime ?? file.mimeType };
+}
+
+async function ingestDriveFile(
+  userId: string,
+  accessToken: string,
+  file: DriveFile,
+  summary: SyncSummary,
+  folderCache: Map<string, FolderInfo | null>
+): Promise<void> {
+  const folderPath = await resolveDriveFolderPath(accessToken, file.parents, folderCache);
+  if (isIgnoredVaultPath(folderPath, file.name)) {
+    summary.skipped += 1;
+    return;
+  }
+
+  const downloaded = await downloadFile(accessToken, file);
+  if (!downloaded) {
+    summary.skipped += 1;
+    return;
+  }
+
+  const result = await ingestFile({
+    userId,
+    kind: "google_drive",
+    externalId: file.id,
+    folderPath,
+    title: file.name,
+    mimeType: downloaded.mimeType,
+    webUrl: file.webViewLink ?? null,
+    sourceUpdatedAt: file.modifiedTime ? new Date(file.modifiedTime) : null,
+    buffer: downloaded.buffer,
+  });
+  if (result.skipped) summary.skipped += 1;
+  else summary.processed += 1;
+}
+
+function noteFileError(summary: SyncSummary, label: string, err: unknown): void {
+  if (err instanceof SyncInterrupted || err instanceof EmbeddingRateLimitError) throw err;
+  summary.errors.push(`${label}: ${(err as Error).message}`.slice(0, 300));
 }
 
 interface BackfillResult {
   done: boolean;
-  /** Cursor to persist: "" once done, otherwise a `backfill:<token>` value
-   * for the next call to resume from. */
+  /** Cursor to persist: changes cursor once done, otherwise a backfill value. */
   resumeCursor: string;
 }
 
 /**
  * The Changes API only reports changes going forward from a start token —
  * it has no concept of "everything that already exists". A first-time sync
- * has to walk the full file list once via files.list before it can switch
- * to incremental Changes API polling. Runs in small pages and bails out
- * (with a resume token) if it's been running too long for one request.
+ * has to walk the full file list once via files.list (every folder, not
+ * only the root) before it can switch to incremental Changes API polling.
  */
 async function ingestExistingFiles(
   userId: string,
@@ -152,64 +253,138 @@ async function ingestExistingFiles(
   folderCache: Map<string, FolderInfo | null>
 ): Promise<BackfillResult> {
   let pageToken = startToken || undefined;
+  let origin: PageTokenOrigin = startToken ? "stored" : "none";
 
   for (;;) {
-    const url =
-      `/files?pageSize=${BACKFILL_PAGE_SIZE}&q=` +
-      encodeURIComponent("trashed = false") +
-      "&fields=" +
-      encodeURIComponent("nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents)") +
-      (pageToken ? `&pageToken=${pageToken}` : "");
-
-    const res = await driveFetch(accessToken, url);
+    const query = driveListQuery(
+      {
+        pageSize: String(BACKFILL_PAGE_SIZE),
+        q: "trashed = false",
+        fields:
+          "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents)",
+        supportsAllDrives: "true",
+        includeItemsFromAllDrives: "true",
+        corpora: "allDrives",
+      },
+      pageToken
+    );
+    const res = await driveFetch(accessToken, `/files?${query}`, pageToken ? origin : "none");
     const page = (await res.json()) as FilesListPage;
 
     for (const file of page.files) {
       try {
-        const buffer = await downloadFile(accessToken, file);
-        if (!buffer) {
-          summary.skipped += 1;
-          continue;
-        }
-
-        const folderPath = await resolveDriveFolderPath(accessToken, file.parents, folderCache);
-        const result = await ingestFile({
-          userId,
-          kind: "google_drive",
-          externalId: file.id,
-          folderPath,
-          title: file.name,
-          mimeType: file.mimeType,
-          webUrl: file.webViewLink ?? null,
-          sourceUpdatedAt: file.modifiedTime ? new Date(file.modifiedTime) : null,
-          buffer,
-        });
-        if (result.skipped) summary.skipped += 1;
-        else summary.processed += 1;
+        await ingestDriveFile(userId, accessToken, file, summary, folderCache);
       } catch (err) {
-        summary.errors.push(`${file.name}: ${(err as Error).message}`);
+        if (err instanceof EmbeddingRateLimitError) {
+          throw new SyncInterrupted(err.message, {
+            retryAfterMs: err.retryAfterMs,
+            resumeCursor: writeDriveBackfillCursor(pageToken ?? ""),
+          });
+        }
+        noteFileError(summary, file.name, err);
       }
 
       if (Date.now() > deadline) {
         // Resume at the start of this same page next time. Files already
-        // ingested above will just be skipped again via the content-hash
-        // check, so re-fetching the page costs a little bandwidth, not
-        // correctness.
-        return { done: false, resumeCursor: `${BACKFILL_CURSOR_PREFIX}${pageToken ?? ""}` };
+        // ingested above are skipped via the content-hash check once they
+        // have indexedAt set.
+        return { done: false, resumeCursor: writeDriveBackfillCursor(pageToken ?? "") };
       }
     }
 
-    if (!page.nextPageToken) return { done: true, resumeCursor: "" };
+    if (!page.nextPageToken) {
+      const start = await getStartPageToken(accessToken);
+      return { done: true, resumeCursor: writeDriveChangesCursor(start) };
+    }
 
     pageToken = page.nextPageToken;
+    origin = "fresh";
     if (Date.now() > deadline) {
-      return { done: false, resumeCursor: `${BACKFILL_CURSOR_PREFIX}${pageToken}` };
+      return { done: false, resumeCursor: writeDriveBackfillCursor(pageToken) };
     }
   }
 }
 
-/** Incrementally syncs a user's Google Drive using the Changes API, so a
- * re-run only touches files that actually changed since the last cursor. */
+async function retryPendingDriveFiles(
+  userId: string,
+  accessToken: string,
+  summary: SyncSummary,
+  pendingDeadline: number,
+  hardDeadline: number,
+  folderCache: Map<string, FolderInfo | null>
+): Promise<{ more: boolean }> {
+  const pending = await listPendingDocuments(userId, "google_drive", PENDING_BATCH);
+  for (const doc of pending) {
+    if (Date.now() > hardDeadline) {
+      throw new SyncInterrupted("Zeitbudget erreicht, ausstehende Dateien werden fortgesetzt.");
+    }
+    if (Date.now() > pendingDeadline) return { more: true };
+
+    try {
+      const res = await driveFetch(
+        accessToken,
+        `/files/${encodeURIComponent(doc.externalId)}?fields=id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents&supportsAllDrives=true`,
+        "none"
+      );
+      const file = (await res.json()) as DriveFile;
+      if (file.trashed) {
+        await settleUnindexed(doc.id, "Datei liegt im Papierkorb und wird nicht indexiert");
+        summary.skipped += 1;
+        continue;
+      }
+      const folderPath = await resolveDriveFolderPath(accessToken, file.parents, folderCache);
+      if (isIgnoredVaultPath(folderPath, file.name)) {
+        await settleUnindexed(doc.id, "Ignorierter Ordner (.obsidian oder .git), nicht indexiert");
+        summary.skipped += 1;
+        continue;
+      }
+      const downloaded = await downloadFile(accessToken, file);
+      if (!downloaded) {
+        await settleUnindexed(doc.id, "unsupported file type, not indexed");
+        summary.skipped += 1;
+        continue;
+      }
+      const result = await ingestFile({
+        userId,
+        kind: "google_drive",
+        externalId: file.id,
+        folderPath,
+        title: file.name,
+        mimeType: downloaded.mimeType,
+        webUrl: file.webViewLink ?? null,
+        sourceUpdatedAt: file.modifiedTime ? new Date(file.modifiedTime) : null,
+        buffer: downloaded.buffer,
+      });
+      if (result.skipped) summary.skipped += 1;
+      else summary.processed += 1;
+    } catch (err) {
+      if (err instanceof DriveRequestError && (err.status === 404 || err.status === 403)) {
+        await settleUnindexed(doc.id, "Datei in Google Drive nicht mehr verfügbar");
+        summary.skipped += 1;
+        continue;
+      }
+      if (err instanceof EmbeddingRateLimitError) {
+        throw new SyncInterrupted(err.message, { retryAfterMs: err.retryAfterMs });
+      }
+      noteFileError(summary, doc.title, err);
+    }
+  }
+  return { more: pending.length === PENDING_BATCH };
+}
+
+async function saveState(
+  userId: string,
+  set: { cursor?: string | null; status: "idle" | "error"; lastError: string | null }
+) {
+  await db
+    .update(syncState)
+    .set({ ...set, lastSyncedAt: new Date() })
+    .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
+}
+
+/** Incrementally syncs a user's Google Drive. The first run (and any run
+ * whose cursor predates the current cursor version) walks every file via
+ * files.list, then switches to the Changes API. */
 export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
   const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], done: true };
   const deadline = Date.now() + MAX_RUNTIME_MS;
@@ -232,34 +407,61 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
       .from(syncState)
       .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
 
-    const cursor = state?.cursor ?? null;
+    const pending = await retryPendingDriveFiles(
+      userId,
+      accessToken,
+      summary,
+      Date.now() + Math.floor(MAX_RUNTIME_MS / 2),
+      deadline,
+      folderCache
+    );
 
-    if (cursor === null || cursor.startsWith(BACKFILL_CURSOR_PREFIX)) {
-      // First sync ever, or a first sync still in progress from an earlier
-      // (time-boxed) call: back-fill existing files before switching to
-      // incremental Changes API polling.
-      const startToken = cursor?.slice(BACKFILL_CURSOR_PREFIX.length) ?? "";
-      const backfill = await ingestExistingFiles(userId, accessToken, summary, startToken, deadline, folderCache);
+    const parsed = readDriveCursor(state?.cursor ?? null);
+    let changesCursor: string | null = null;
 
+    if (parsed.phase === "backfill") {
+      const backfill = await ingestExistingFiles(
+        userId,
+        accessToken,
+        summary,
+        parsed.pageToken,
+        deadline,
+        folderCache
+      );
       if (!backfill.done) {
-        await db
-          .update(syncState)
-          .set({ cursor: backfill.resumeCursor, status: "idle", lastSyncedAt: new Date(), lastError: null })
-          .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
+        await saveState(userId, { cursor: backfill.resumeCursor, status: "idle", lastError: null });
         summary.done = false;
         return summary;
       }
+      changesCursor = backfill.resumeCursor;
+      // Persist the new changes cursor before polling, so a later failure
+      // does not repeat the whole file walk.
+      await saveState(userId, { cursor: changesCursor, status: "idle", lastError: null });
     }
 
+    const changesPrefix = `${DRIVE_CURSOR_VERSION}:`;
     let pageToken =
-      cursor && !cursor.startsWith(BACKFILL_CURSOR_PREFIX) ? cursor : await getStartPageToken(accessToken);
-    let newCursor = pageToken;
+      parsed.phase === "changes"
+        ? parsed.pageToken
+        : changesCursor?.startsWith(changesPrefix)
+          ? changesCursor.slice(changesPrefix.length)
+          : await getStartPageToken(accessToken);
+    let origin: PageTokenOrigin = parsed.phase === "changes" ? "stored" : "fresh";
+    let newCursor = writeDriveChangesCursor(pageToken);
 
     while (pageToken) {
-      const res = await driveFetch(
-        accessToken,
-        `/changes?pageToken=${pageToken}&pageSize=100&includeRemoved=true&fields=nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents))`
+      const query = driveListQuery(
+        {
+          pageSize: "100",
+          includeRemoved: "true",
+          supportsAllDrives: "true",
+          includeItemsFromAllDrives: "true",
+          fields:
+            "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,webViewLink,trashed,size,parents))",
+        },
+        pageToken
       );
+      const res = await driveFetch(accessToken, `/changes?${query}`, origin);
       const page = (await res.json()) as ChangesPage;
 
       for (const change of page.changes) {
@@ -269,53 +471,60 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
             continue;
           }
           if (!change.file) continue;
-
-          const buffer = await downloadFile(accessToken, change.file);
-          if (!buffer) {
-            summary.skipped += 1;
-            continue;
-          }
-
-          const folderPath = await resolveDriveFolderPath(accessToken, change.file.parents, folderCache);
-          const result = await ingestFile({
-            userId,
-            kind: "google_drive",
-            externalId: change.file.id,
-            folderPath,
-            title: change.file.name,
-            mimeType: change.file.mimeType,
-            webUrl: change.file.webViewLink ?? null,
-            sourceUpdatedAt: change.file.modifiedTime ? new Date(change.file.modifiedTime) : null,
-            buffer,
-          });
-          if (result.skipped) summary.skipped += 1;
-          else summary.processed += 1;
+          await ingestDriveFile(userId, accessToken, change.file, summary, folderCache);
         } catch (err) {
-          summary.errors.push(`${change.file?.name ?? change.fileId}: ${(err as Error).message}`);
+          if (err instanceof EmbeddingRateLimitError) {
+            throw new SyncInterrupted(err.message, {
+              retryAfterMs: err.retryAfterMs,
+              resumeCursor: writeDriveChangesCursor(pageToken),
+            });
+          }
+          noteFileError(summary, change.file?.name ?? change.fileId, err);
         }
       }
 
       pageToken = page.nextPageToken ?? "";
-      if (page.newStartPageToken) newCursor = page.newStartPageToken;
+      origin = "fresh";
+      if (page.newStartPageToken) newCursor = writeDriveChangesCursor(page.newStartPageToken);
 
       if (Date.now() > deadline && pageToken) {
-        // Large backlog of changes: persist progress and let the next call
-        // (or the daily cron) continue from here instead of timing out.
-        newCursor = pageToken;
+        newCursor = writeDriveChangesCursor(pageToken);
         summary.done = false;
         break;
       }
     }
 
-    await db
-      .update(syncState)
-      .set({ cursor: newCursor, status: "idle", lastSyncedAt: new Date(), lastError: null })
-      .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
+    if (pending.more) summary.done = false;
+
+    await saveState(userId, { cursor: newCursor, status: "idle", lastError: null });
   } catch (err) {
-    await db
-      .update(syncState)
-      .set({ status: "error", lastError: (err as Error).message })
-      .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
+    if (err instanceof SyncInterrupted) {
+      summary.done = false;
+      summary.retryAfterMs = err.retryAfterMs;
+      summary.errors.push(err.message.slice(0, 300));
+      await saveState(userId, {
+        ...(err.resumeCursor !== undefined ? { cursor: err.resumeCursor } : {}),
+        status: "idle",
+        lastError: err.retryAfterMs
+          ? "Embedding-Dienst hat ein Limit gemeldet. Der nächste Lauf macht weiter."
+          : null,
+      });
+      return summary;
+    }
+    if (isStoredPageTokenRejected(err)) {
+      summary.done = false;
+      summary.errors.push(
+        "Der gespeicherte Google-Drive-Cursor war ungültig und wurde verworfen. Der nächste Lauf liest alle Dateien neu ein."
+      );
+      await saveState(userId, {
+        cursor: null,
+        status: "idle",
+        lastError:
+          "Der gespeicherte Google-Drive-Cursor war ungültig und wurde verworfen. Der nächste Lauf liest alle Dateien neu ein.",
+      });
+      return summary;
+    }
+    await saveState(userId, { status: "error", lastError: (err as Error).message.slice(0, 500) });
     throw err;
   }
 

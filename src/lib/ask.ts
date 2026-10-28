@@ -11,6 +11,7 @@ export interface Source {
   documentId: string;
   title: string;
   url: string | null;
+  folderPath: string | null;
   similarity: number;
 }
 
@@ -26,6 +27,7 @@ async function retrieve(userId: string, query: string): Promise<
       documentId: documents.id,
       title: documents.title,
       url: documents.webUrl,
+      folderPath: documents.folderPath,
       similarity,
     })
     .from(chunks)
@@ -59,6 +61,7 @@ export async function askSecondbrain(
       documentId: r.documentId,
       title: r.title,
       url: r.url,
+      folderPath: r.folderPath,
       similarity: r.similarity,
     })),
   };

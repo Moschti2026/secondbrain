@@ -7,7 +7,7 @@ export default async function ChatPage() {
   if (!session?.user?.id) redirect("/login");
 
   return (
-    <div>
+    <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="mb-4 text-2xl font-semibold">Chat</h1>
       <ChatPanel />
     </div>

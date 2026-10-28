@@ -4,6 +4,10 @@ import mammoth from "mammoth";
 const TEXT_MIME_TYPES = [
   "text/plain",
   "text/markdown",
+  // Drive sometimes reports .md this way; octet-stream is handled by the
+  // filename fallback in sync-filters.ts before extract runs.
+  "text/x-markdown",
+  "application/x-markdown",
   "text/csv",
   "application/json",
 ];

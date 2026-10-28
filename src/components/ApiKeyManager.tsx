@@ -12,12 +12,13 @@ interface SyncKey {
 export default function ApiKeyManager({ initialKeys }: { initialKeys: SyncKey[] }) {
   const [keys, setKeys] = useState(initialKeys);
   const [newKey, setNewKey] = useState<string | null>(null);
+  const [label, setLabel] = useState("Claude");
 
   async function generate() {
     const res = await fetch("/api/sync-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: "Lokaler Sync-Client" }),
+      body: JSON.stringify({ label: label.trim() || "API-Key" }),
     });
     const body = await res.json();
     setNewKey(body.key);
@@ -36,12 +37,21 @@ export default function ApiKeyManager({ initialKeys }: { initialKeys: SyncKey[] 
 
   return (
     <div className="space-y-3">
-      <button
-        onClick={generate}
-        className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-      >
-        + Neuen API-Key erzeugen
-      </button>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Name, z.B. Claude oder Cursor"
+          aria-label="Name des API-Keys"
+          className="min-w-0 flex-1 rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-base sm:text-sm dark:border-neutral-700"
+        />
+        <button
+          onClick={generate}
+          className="shrink-0 rounded-md border border-neutral-300 px-3 py-2 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          + Neuen API-Key erzeugen
+        </button>
+      </div>
 
       {newKey && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950">
@@ -53,8 +63,8 @@ export default function ApiKeyManager({ initialKeys }: { initialKeys: SyncKey[] 
       {keys.length > 0 && (
         <ul className="divide-y divide-neutral-200 text-sm dark:divide-neutral-800">
           {keys.map((k) => (
-            <li key={k.id} className="flex items-center justify-between py-2">
-              <span>
+            <li key={k.id} className="flex flex-col gap-1 py-2 sm:flex-row sm:items-center sm:justify-between">
+              <span className="min-w-0 break-words">
                 {k.label} · erstellt {new Date(k.createdAt).toLocaleDateString("de-DE")}
                 {k.lastUsedAt ? ` · zuletzt genutzt ${new Date(k.lastUsedAt).toLocaleDateString("de-DE")}` : " · noch nicht genutzt"}
               </span>

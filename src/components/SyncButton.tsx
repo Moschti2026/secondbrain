@@ -12,6 +12,7 @@ interface SyncResponse {
   /** false = this call hit its time budget with more work left; call again
    * to continue. Older deployments without this field behave as if done. */
   done?: boolean;
+  retryAfterMs?: number;
 }
 
 // A large first sync (thousands of Drive/OneDrive files) needs many
@@ -59,14 +60,19 @@ export default function SyncButton({ endpoint, label }: { endpoint: string; labe
         if (body.errors?.length) totals.errors.push(...body.errors);
 
         const done = body.done ?? true;
+        const waiting = !done && body.retryAfterMs && body.retryAfterMs > 0;
         setStatus(
           `${totals.processed} verarbeitet, ${totals.skipped} unverändert, ${totals.removed} entfernt` +
             (totals.errors.length ? `, ${totals.errors.length} Fehler` : "") +
-            (done ? "" : " — läuft weiter…")
+            (waiting ? " — kurzes Limit, warte…" : done ? "" : " — läuft weiter…")
         );
         router.refresh();
 
         if (done || stopRef.current) break;
+        if (waiting) {
+          await new Promise((resolve) => setTimeout(resolve, Math.min(body.retryAfterMs ?? 0, 15_000)));
+          if (stopRef.current) break;
+        }
       }
     } catch (err) {
       setStatus((err as Error).message);
