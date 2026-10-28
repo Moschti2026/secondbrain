@@ -1,5 +1,93 @@
 import { mergeSyncSummaries, type SyncSummary } from "./types";
 
+/** Per-invocation budget for GET /api/cron/sync. Stays under the 300s
+ * platform limit so the function can persist its cursor and answer. */
+export const CRON_SYNC_BUDGET_MS = 240_000;
+
+/** Manual "Sync" clicks stay short; the cron loop is what drains a backlog. */
+export const MANUAL_SYNC_BUDGET_MS = 45_000;
+
+/** Do not start a download or embed once less than this remains before the
+ * slice deadline. The cron budget is 240s against a 300s platform limit,
+ * so one slow file still fits after this margin. */
+export const SYNC_SAFETY_MARGIN_MS = 15_000;
+
+export function resolveSyncDeadline(deadline?: number): number {
+  return deadline ?? Date.now() + MANUAL_SYNC_BUDGET_MS;
+}
+
+export function syncOutOfTime(deadline: number, margin = SYNC_SAFETY_MARGIN_MS): boolean {
+  return Date.now() >= deadline - margin;
+}
+
+export interface SyncJob {
+  key: string;
+  run: (deadline: number) => Promise<SyncSummary>;
+}
+
+function idleSummary(done: boolean, error?: string): SyncSummary {
+  return {
+    processed: 0,
+    skipped: 0,
+    removed: 0,
+    errors: error ? [error.slice(0, 500)] : [],
+    aliases: 0,
+    done,
+  };
+}
+
+/**
+ * Runs each source for an equal slice of `budgetMs` first, then spends
+ * whatever time is left on sources that reported more work. One source
+ * cannot consume the whole request before the others have started, and a
+ * throw in one source does not skip the rest.
+ */
+export async function runSyncJobs(
+  jobs: SyncJob[],
+  options: { budgetMs: number; now?: () => number; marginMs?: number }
+): Promise<{ hasMore: boolean; results: Record<string, SyncSummary> }> {
+  const now = options.now ?? Date.now;
+  const marginMs = options.marginMs ?? 5_000;
+  const deadline = now() + options.budgetMs;
+  const results: Record<string, SyncSummary> = {};
+
+  const slice = Math.max(1_000, Math.floor((deadline - now()) / Math.max(jobs.length, 1)));
+
+  for (const job of jobs) {
+    if (now() >= deadline - marginMs) {
+      results[job.key] = idleSummary(false);
+      continue;
+    }
+    const jobDeadline = Math.min(deadline, now() + slice);
+    try {
+      results[job.key] = await job.run(jobDeadline);
+    } catch (err) {
+      results[job.key] = idleSummary(true, (err as Error).message);
+    }
+  }
+
+  for (const job of jobs) {
+    const current = results[job.key];
+    if (!current || current.done) continue;
+    if (now() >= deadline - marginMs) break;
+    try {
+      const more = await job.run(deadline);
+      const merged = mergeSyncSummaries([current, more]);
+      // The later call is the one that knows whether the source finished.
+      results[job.key] = { ...merged, done: more.done, retryAfterMs: more.retryAfterMs };
+    } catch (err) {
+      const merged = mergeSyncSummaries([
+        current,
+        idleSummary(true, (err as Error).message),
+      ]);
+      results[job.key] = merged;
+    }
+  }
+
+  const hasMore = Object.values(results).some((result) => !result.done);
+  return { hasMore, results };
+}
+
 /** Raised when a slice should stop cleanly and continue on the next call
  * (rate limit or similar), without marking the sync as failed. */
 export class SyncInterrupted extends Error {

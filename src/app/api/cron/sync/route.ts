@@ -3,22 +3,19 @@ import { accounts } from "@/db/schema";
 import { syncGoogleDrive } from "@/lib/connectors/google-drive";
 import { syncMicrosoft365 } from "@/lib/connectors/microsoft365";
 import { syncOneNote } from "@/lib/connectors/onenote";
-import { syncMicrosoftAccount, syncUntilDoneOrDeadline } from "@/lib/connectors/sync-control";
+import { CRON_SYNC_BUDGET_MS, runSyncJobs, type SyncJob } from "@/lib/connectors/sync-control";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
-// Leaves headroom under maxDuration for the current response to still get
-// sent; if the actual platform limit is lower (e.g. 60s on some plans),
-// the function is simply cut off earlier and picks up next run — no worse
-// than before, just less time to make progress in one run.
-const OVERALL_DEADLINE_MS = 250_000;
 
 /**
  * Periodic re-sync for every user with a connected account. Wire this up
  * as a Vercel Cron job (see vercel.json) hitting this route with the
  * `Authorization: Bearer $CRON_SECRET` header Vercel adds automatically
  * when CRON_SECRET is set.
+ *
+ * Each invocation stops around {@link CRON_SYNC_BUDGET_MS} and persists
+ * cursors in `sync_state`. Call again while `hasMore` is true.
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -30,35 +27,27 @@ export async function GET(request: Request) {
     .select({ userId: accounts.userId, provider: accounts.provider })
     .from(accounts);
 
-  const deadline = Date.now() + OVERALL_DEADLINE_MS;
-  const results: Record<string, unknown> = {};
-
+  const jobs: SyncJob[] = [];
   for (const { userId, provider } of connected) {
-    if (Date.now() > deadline) {
-      results[`${provider}:${userId}`] = { skipped: "out of time this run, continues next run" };
-      continue;
-    }
-    try {
-      if (provider === "google") {
-        results[`google_drive:${userId}`] = await syncUntilDoneOrDeadline(
-          () => syncGoogleDrive(userId),
-          deadline
-        );
-      } else if (provider === "microsoft-entra-id") {
-        // OneDrive runs first. A failure in either source is reported on
-        // the summary and does not skip the other one.
-        results[`microsoft365:${userId}`] = await syncMicrosoftAccount(
-          {
-            onedrive: () => syncMicrosoft365(userId),
-            onenote: () => syncOneNote(userId),
-          },
-          deadline
-        );
-      }
-    } catch (err) {
-      results[`${provider}:${userId}`] = { error: (err as Error).message };
+    if (provider === "google") {
+      jobs.push({
+        key: `google_drive:${userId}`,
+        run: (deadline) => syncGoogleDrive(userId, { deadline }),
+      });
+    } else if (provider === "microsoft-entra-id") {
+      // Separate jobs so a long OneDrive backlog cannot skip OneNote, and
+      // a failure in one source stays in that source's summary.
+      jobs.push({
+        key: `onedrive:${userId}`,
+        run: (deadline) => syncMicrosoft365(userId, { deadline }),
+      });
+      jobs.push({
+        key: `onenote:${userId}`,
+        run: (deadline) => syncOneNote(userId, { deadline }),
+      });
     }
   }
 
-  return Response.json({ results });
+  const { hasMore, results } = await runSyncJobs(jobs, { budgetMs: CRON_SYNC_BUDGET_MS });
+  return Response.json({ hasMore, results });
 }

@@ -9,6 +9,7 @@ export interface DocumentSummary {
   webUrl: string | null;
   indexedAt: Date | null;
   indexError: string | null;
+  aliasOf: string | null;
 }
 
 /**
@@ -26,6 +27,7 @@ export async function listDocuments(userId: string): Promise<DocumentSummary[]> 
       webUrl: documents.webUrl,
       indexedAt: documents.indexedAt,
       indexError: documents.indexError,
+      aliasOf: documents.aliasOf,
     })
     .from(documents)
     .where(eq(documents.userId, userId))

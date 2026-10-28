@@ -26,6 +26,9 @@ function FolderNode({ node, depth }: { node: FolderTreeNode; depth: number }) {
             ) : (
               <span className="min-w-0 break-words">{doc.title}</span>
             )}
+            {doc.aliasOf && (
+              <span className="min-w-0 break-words text-xs text-neutral-500">(gleicher Inhalt, bereits indexiert)</span>
+            )}
             {doc.indexError && (
               <span className="min-w-0 break-words text-xs text-amber-600 dark:text-amber-500">({doc.indexError})</span>
             )}

@@ -2,8 +2,10 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
-import { ingestFile } from "@/lib/ingest";
-import type { SyncSummary } from "./types";
+import { consolidateDuplicates, ingestFile } from "@/lib/ingest";
+import { EmbeddingRateLimitError } from "@/lib/embeddings";
+import { resolveSyncDeadline, syncOutOfTime, SyncInterrupted } from "./sync-control";
+import { recordIngestOutcome, type SyncSummary } from "./types";
 import {
   readOneNoteCursor,
   walkOneNote,
@@ -11,9 +13,6 @@ import {
 } from "./onenote-pages";
 
 const GRAPH_API = "https://graph.microsoft.com/v1.0";
-// See google-drive.ts for why this exists: a single HTTP request can't
-// safely assume a full re-scan finishes within one call.
-const MAX_RUNTIME_MS = 45_000;
 
 async function graphFetch(accessToken: string, url: string) {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -39,12 +38,20 @@ async function graphFetch(accessToken: string, url: string) {
  * Known limitation: pages deleted in OneNote are not removed from
  * Secondbrain (same tradeoff as local-sync-cli, see its README).
  */
-export async function syncOneNote(userId: string): Promise<SyncSummary> {
-  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], done: true };
-  const deadline = Date.now() + MAX_RUNTIME_MS;
+export async function syncOneNote(
+  userId: string,
+  options: { deadline?: number } = {}
+): Promise<SyncSummary> {
+  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], aliases: 0, done: true };
+  const deadline = resolveSyncDeadline(options.deadline);
+  if (syncOutOfTime(deadline)) return { ...summary, done: false };
 
   const accessToken = await getValidAccessToken(userId, "microsoft-entra-id");
   if (!accessToken) throw new Error("Microsoft 365 is not connected for this user.");
+
+  await consolidateDuplicates(userId);
+
+  let stopEarly = false;
 
   const [state] = await db
     .select()
@@ -63,26 +70,43 @@ export async function syncOneNote(userId: string): Promise<SyncSummary> {
       );
       const buffer = Buffer.from(await contentRes.arrayBuffer());
 
-      const result = await ingestFile({
-        userId,
-        kind: "microsoft365",
-        externalId: `onenote:${notePage.id}`,
-        folderPath: section.displayName ? `OneNote/${section.displayName}` : "OneNote",
-        title: notePage.title || "Ohne Titel",
-        mimeType: "text/html",
-        webUrl: notePage.links?.oneNoteWebUrl?.href ?? null,
-        sourceUpdatedAt: notePage.lastModifiedDateTime
-          ? new Date(notePage.lastModifiedDateTime)
-          : null,
-        buffer,
-      });
-      if (result.skipped) summary.skipped += 1;
-      else summary.processed += 1;
+      if (syncOutOfTime(deadline) || stopEarly) return;
+
+      try {
+        const result = await ingestFile({
+          userId,
+          kind: "microsoft365",
+          externalId: `onenote:${notePage.id}`,
+          folderPath: section.displayName ? `OneNote/${section.displayName}` : "OneNote",
+          title: notePage.title || "Ohne Titel",
+          mimeType: "text/html",
+          webUrl: notePage.links?.oneNoteWebUrl?.href ?? null,
+          sourceUpdatedAt: notePage.lastModifiedDateTime
+            ? new Date(notePage.lastModifiedDateTime)
+            : null,
+          buffer,
+          deadline,
+        });
+        recordIngestOutcome(summary, result, notePage.title || notePage.id);
+      } catch (err) {
+        if (err instanceof EmbeddingRateLimitError) {
+          summary.retryAfterMs = err.retryAfterMs;
+          summary.errors.push(err.message.slice(0, 300));
+          stopEarly = true;
+          return;
+        }
+        if (err instanceof SyncInterrupted) {
+          summary.retryAfterMs = err.retryAfterMs;
+          stopEarly = true;
+          return;
+        }
+        throw err;
+      }
     },
     onError: (message) => {
       summary.errors.push(message);
     },
-    outOfTime: () => Date.now() > deadline,
+    outOfTime: () => stopEarly || syncOutOfTime(deadline),
   });
 
   summary.done = !outcome.incomplete;

@@ -3,6 +3,8 @@ export interface SyncSummary {
   skipped: number;
   removed: number;
   errors: string[];
+  /** Copies linked to an existing document instead of embedded again. */
+  aliases?: number;
   /** false if this call hit its time budget with more work left (a resume
    * cursor was persisted) — the caller should call again immediately to
    * continue, rather than waiting for the next manual click or cron run. */
@@ -19,9 +21,28 @@ export function mergeSyncSummaries(summaries: SyncSummary[]): SyncSummary {
       skipped: acc.skipped + s.skipped,
       removed: acc.removed + s.removed,
       errors: [...acc.errors, ...s.errors],
+      aliases: (acc.aliases ?? 0) + (s.aliases ?? 0),
       done: acc.done && s.done,
       retryAfterMs: Math.max(acc.retryAfterMs ?? 0, s.retryAfterMs ?? 0) || undefined,
     }),
-    { processed: 0, skipped: 0, removed: 0, errors: [], done: true }
+    { processed: 0, skipped: 0, removed: 0, errors: [], aliases: 0, done: true }
   );
+}
+
+export function recordIngestOutcome(
+  summary: SyncSummary,
+  result: { skipped: boolean; aliasOf?: string; error?: string },
+  label: string
+): void {
+  if (result.aliasOf) {
+    summary.aliases = (summary.aliases ?? 0) + 1;
+    summary.skipped += 1;
+    return;
+  }
+  if (result.error) {
+    summary.errors.push(`${label}: ${result.error}`.slice(0, 300));
+    return;
+  }
+  if (result.skipped) summary.skipped += 1;
+  else summary.processed += 1;
 }

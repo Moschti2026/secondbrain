@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
-import { ingestFile } from "@/lib/ingest";
+import { consolidateDuplicates, ingestFile, noteIndexFailure } from "@/lib/ingest";
 import { EmbeddingRateLimitError } from "@/lib/embeddings";
 import { listPendingDocuments, settleUnindexed } from "@/lib/index-queue";
 import {
@@ -19,20 +19,13 @@ import {
   resolveIngestMimeType,
   shouldSkipForSize,
 } from "@/lib/sync-filters";
-import { SyncInterrupted } from "./sync-control";
-import type { SyncSummary } from "./types";
+import { SyncInterrupted, resolveSyncDeadline, syncOutOfTime } from "./sync-control";
+import { recordIngestOutcome, type SyncSummary } from "./types";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB safety cap per non-markdown file
 const BACKFILL_PAGE_SIZE = 50;
-const PENDING_BATCH = 8;
-
-// A single HTTP request has a limited lifetime end-to-end (the platform's
-// gateway, not just our own function timeout). A first sync over a large
-// Drive can't safely assume it will finish in one request, so it works in
-// time-boxed slices and persists a resume point — repeated clicks (or the
-// daily cron) pick up where the last one left off instead of failing.
-const MAX_RUNTIME_MS = 45_000;
+const PENDING_BATCH = 20;
 
 // Google-native formats have no raw bytes; export them to a plain-text
 // equivalent instead of downloading via alt=media.
@@ -167,30 +160,36 @@ async function getStartPageToken(accessToken: string): Promise<string> {
   return body.startPageToken;
 }
 
-async function downloadFile(
-  accessToken: string,
-  file: DriveFile
-): Promise<{ buffer: Buffer; mimeType: string } | null> {
+type DownloadedFile =
+  | { kind: "ok"; buffer: Buffer; mimeType: string }
+  | { kind: "skip"; cause: "not-file" | "unsupported" | "too-large" };
+
+async function downloadFile(accessToken: string, file: DriveFile): Promise<DownloadedFile> {
   const exportMime = GOOGLE_EXPORT_MIME[file.mimeType];
-  if (file.mimeType === "application/vnd.google-apps.folder") return null;
+  if (file.mimeType === "application/vnd.google-apps.folder") return { kind: "skip", cause: "not-file" };
   if (file.mimeType.startsWith("application/vnd.google-apps.") && !exportMime) {
-    return null; // forms, drawings, apps-script, ... — nothing text-like to extract
+    return { kind: "skip", cause: "unsupported" };
   }
 
-  const ingestMime = exportMime
-    ? file.mimeType
-    : resolveIngestMimeType(file.name, file.mimeType);
-  if (!exportMime && !isIngestableMime(ingestMime)) return null;
+  // Store the exported type (text/plain, text/csv), not the Google-native
+  // mime. Otherwise spreadsheets and presentations reach extractText as
+  // application/vnd.google-apps.* and are marked unsupported.
+  const ingestMime = exportMime ?? resolveIngestMimeType(file.name, file.mimeType);
+  if (!exportMime && !isIngestableMime(ingestMime)) return { kind: "skip", cause: "unsupported" };
 
   const size = file.size ? Number(file.size) : null;
-  if (shouldSkipForSize(file.name, size, MAX_FILE_BYTES)) return null;
+  if (shouldSkipForSize(file.name, size, MAX_FILE_BYTES)) return { kind: "skip", cause: "too-large" };
 
   const path = exportMime
     ? `/files/${encodeURIComponent(file.id)}/export?mimeType=${encodeURIComponent(exportMime)}&supportsAllDrives=true`
     : `/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`;
 
   const res = await driveFetch(accessToken, path, "none");
-  return { buffer: Buffer.from(await res.arrayBuffer()), mimeType: ingestMime ?? file.mimeType };
+  return {
+    kind: "ok",
+    buffer: Buffer.from(await res.arrayBuffer()),
+    mimeType: ingestMime ?? exportMime ?? "application/octet-stream",
+  };
 }
 
 async function ingestDriveFile(
@@ -198,8 +197,13 @@ async function ingestDriveFile(
   accessToken: string,
   file: DriveFile,
   summary: SyncSummary,
-  folderCache: Map<string, FolderInfo | null>
+  folderCache: Map<string, FolderInfo | null>,
+  deadline: number
 ): Promise<void> {
+  if (syncOutOfTime(deadline)) {
+    throw new SyncInterrupted("Zeitbudget erreicht, Google Drive wird fortgesetzt.");
+  }
+
   const folderPath = await resolveDriveFolderPath(accessToken, file.parents, folderCache);
   if (isIgnoredVaultPath(folderPath, file.name)) {
     summary.skipped += 1;
@@ -207,7 +211,7 @@ async function ingestDriveFile(
   }
 
   const downloaded = await downloadFile(accessToken, file);
-  if (!downloaded) {
+  if (downloaded.kind === "skip") {
     summary.skipped += 1;
     return;
   }
@@ -222,9 +226,9 @@ async function ingestDriveFile(
     webUrl: file.webViewLink ?? null,
     sourceUpdatedAt: file.modifiedTime ? new Date(file.modifiedTime) : null,
     buffer: downloaded.buffer,
+    deadline,
   });
-  if (result.skipped) summary.skipped += 1;
-  else summary.processed += 1;
+  recordIngestOutcome(summary, result, file.name);
 }
 
 function noteFileError(summary: SyncSummary, label: string, err: unknown): void {
@@ -271,24 +275,21 @@ async function ingestExistingFiles(
     const res = await driveFetch(accessToken, `/files?${query}`, pageToken ? origin : "none");
     const page = (await res.json()) as FilesListPage;
 
+    const resumeCursor = writeDriveBackfillCursor(pageToken ?? "");
+    await saveCursor(userId, resumeCursor);
+
     for (const file of page.files) {
+      if (syncOutOfTime(deadline)) {
+        return { done: false, resumeCursor };
+      }
       try {
-        await ingestDriveFile(userId, accessToken, file, summary, folderCache);
+        await ingestDriveFile(userId, accessToken, file, summary, folderCache, deadline);
       } catch (err) {
-        if (err instanceof EmbeddingRateLimitError) {
-          throw new SyncInterrupted(err.message, {
-            retryAfterMs: err.retryAfterMs,
-            resumeCursor: writeDriveBackfillCursor(pageToken ?? ""),
-          });
+        if (err instanceof EmbeddingRateLimitError || err instanceof SyncInterrupted) {
+          const retryAfterMs = err instanceof EmbeddingRateLimitError ? err.retryAfterMs : err.retryAfterMs;
+          throw new SyncInterrupted(err.message, { retryAfterMs, resumeCursor });
         }
         noteFileError(summary, file.name, err);
-      }
-
-      if (Date.now() > deadline) {
-        // Resume at the start of this same page next time. Files already
-        // ingested above are skipped via the content-hash check once they
-        // have indexedAt set.
-        return { done: false, resumeCursor: writeDriveBackfillCursor(pageToken ?? "") };
       }
     }
 
@@ -299,7 +300,7 @@ async function ingestExistingFiles(
 
     pageToken = page.nextPageToken;
     origin = "fresh";
-    if (Date.now() > deadline) {
+    if (syncOutOfTime(deadline)) {
       return { done: false, resumeCursor: writeDriveBackfillCursor(pageToken) };
     }
   }
@@ -315,7 +316,7 @@ async function retryPendingDriveFiles(
 ): Promise<{ more: boolean }> {
   const pending = await listPendingDocuments(userId, "google_drive", PENDING_BATCH);
   for (const doc of pending) {
-    if (Date.now() > hardDeadline) {
+    if (syncOutOfTime(hardDeadline)) {
       throw new SyncInterrupted("Zeitbudget erreicht, ausstehende Dateien werden fortgesetzt.");
     }
     if (Date.now() > pendingDeadline) return { more: true };
@@ -339,8 +340,17 @@ async function retryPendingDriveFiles(
         continue;
       }
       const downloaded = await downloadFile(accessToken, file);
-      if (!downloaded) {
-        await settleUnindexed(doc.id, "unsupported file type, not indexed");
+      if (downloaded.kind === "skip") {
+        if (downloaded.cause === "too-large") {
+          await settleUnindexed(doc.id, "Datei ist größer als 20 MB, nicht indexiert");
+        } else {
+          await noteIndexFailure(
+            doc.id,
+            downloaded.cause === "not-file"
+              ? "Kein herunterladbarer Dateiinhalt"
+              : "unsupported file type, not indexed"
+          );
+        }
         summary.skipped += 1;
         continue;
       }
@@ -354,9 +364,9 @@ async function retryPendingDriveFiles(
         webUrl: file.webViewLink ?? null,
         sourceUpdatedAt: file.modifiedTime ? new Date(file.modifiedTime) : null,
         buffer: downloaded.buffer,
+        deadline: hardDeadline,
       });
-      if (result.skipped) summary.skipped += 1;
-      else summary.processed += 1;
+      recordIngestOutcome(summary, result, file.name);
     } catch (err) {
       if (err instanceof DriveRequestError && (err.status === 404 || err.status === 403)) {
         await settleUnindexed(doc.id, "Datei in Google Drive nicht mehr verfügbar");
@@ -366,10 +376,19 @@ async function retryPendingDriveFiles(
       if (err instanceof EmbeddingRateLimitError) {
         throw new SyncInterrupted(err.message, { retryAfterMs: err.retryAfterMs });
       }
+      if (err instanceof SyncInterrupted) throw err;
+      await noteIndexFailure(doc.id, (err as Error).message);
       noteFileError(summary, doc.title, err);
     }
   }
   return { more: pending.length === PENDING_BATCH };
+}
+
+async function saveCursor(userId: string, cursor: string) {
+  await db
+    .update(syncState)
+    .set({ cursor, lastSyncedAt: new Date() })
+    .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
 }
 
 async function saveState(
@@ -385,9 +404,13 @@ async function saveState(
 /** Incrementally syncs a user's Google Drive. The first run (and any run
  * whose cursor predates the current cursor version) walks every file via
  * files.list, then switches to the Changes API. */
-export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
-  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], done: true };
-  const deadline = Date.now() + MAX_RUNTIME_MS;
+export async function syncGoogleDrive(
+  userId: string,
+  options: { deadline?: number } = {}
+): Promise<SyncSummary> {
+  const summary: SyncSummary = { processed: 0, skipped: 0, removed: 0, errors: [], aliases: 0, done: true };
+  const deadline = resolveSyncDeadline(options.deadline);
+  if (syncOutOfTime(deadline)) return { ...summary, done: false };
   const folderCache = new Map<string, FolderInfo | null>();
 
   await db
@@ -402,16 +425,19 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
     const accessToken = await getValidAccessToken(userId, "google");
     if (!accessToken) throw new Error("Google Drive is not connected for this user.");
 
+    await consolidateDuplicates(userId);
+
     const [state] = await db
       .select()
       .from(syncState)
       .where(and(eq(syncState.userId, userId), eq(syncState.provider, "google_drive")));
 
+    const pendingBudget = Math.min(90_000, Math.floor(Math.max(0, deadline - Date.now()) * 0.4));
     const pending = await retryPendingDriveFiles(
       userId,
       accessToken,
       summary,
-      Date.now() + Math.floor(MAX_RUNTIME_MS / 2),
+      Date.now() + pendingBudget,
       deadline,
       folderCache
     );
@@ -450,6 +476,12 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
     let newCursor = writeDriveChangesCursor(pageToken);
 
     while (pageToken) {
+      if (syncOutOfTime(deadline)) {
+        newCursor = writeDriveChangesCursor(pageToken);
+        summary.done = false;
+        break;
+      }
+      await saveCursor(userId, writeDriveChangesCursor(pageToken));
       const query = driveListQuery(
         {
           pageSize: "100",
@@ -471,11 +503,12 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
             continue;
           }
           if (!change.file) continue;
-          await ingestDriveFile(userId, accessToken, change.file, summary, folderCache);
+          await ingestDriveFile(userId, accessToken, change.file, summary, folderCache, deadline);
         } catch (err) {
-          if (err instanceof EmbeddingRateLimitError) {
+          if (err instanceof EmbeddingRateLimitError || err instanceof SyncInterrupted) {
+            const retryAfterMs = err instanceof EmbeddingRateLimitError ? err.retryAfterMs : err.retryAfterMs;
             throw new SyncInterrupted(err.message, {
-              retryAfterMs: err.retryAfterMs,
+              retryAfterMs,
               resumeCursor: writeDriveChangesCursor(pageToken),
             });
           }
@@ -487,7 +520,7 @@ export async function syncGoogleDrive(userId: string): Promise<SyncSummary> {
       origin = "fresh";
       if (page.newStartPageToken) newCursor = writeDriveChangesCursor(page.newStartPageToken);
 
-      if (Date.now() > deadline && pageToken) {
+      if (syncOutOfTime(deadline) && pageToken) {
         newCursor = writeDriveChangesCursor(pageToken);
         summary.done = false;
         break;
