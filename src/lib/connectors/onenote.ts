@@ -4,30 +4,22 @@ import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
 import { ingestFile } from "@/lib/ingest";
 import type { SyncSummary } from "./types";
+import {
+  readOneNoteCursor,
+  walkOneNote,
+  writeOneNoteCursor,
+} from "./onenote-pages";
 
 const GRAPH_API = "https://graph.microsoft.com/v1.0";
-const PAGE_SIZE = 100;
 // See google-drive.ts for why this exists: a single HTTP request can't
 // safely assume a full re-scan finishes within one call.
 const MAX_RUNTIME_MS = 45_000;
 
-interface OneNotePage {
-  id: string;
-  title: string;
-  lastModifiedDateTime?: string;
-  links?: { oneNoteWebUrl?: { href?: string } };
-  parentSection?: { displayName?: string };
-}
-
-interface OneNotePagesResponse {
-  value: OneNotePage[];
-  "@odata.nextLink"?: string;
-}
-
 async function graphFetch(accessToken: string, url: string) {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
-    throw new Error(`Microsoft Graph (OneNote) request failed: ${res.status} ${await res.text()}`);
+    const body = (await res.text()).slice(0, 300);
+    throw new Error(`Microsoft Graph (OneNote) request failed: ${res.status} ${body}`);
   }
   return res;
 }
@@ -38,9 +30,11 @@ async function graphFetch(accessToken: string, url: string) {
  * full re-list on every run; the content-hash check in ingestFile still
  * makes re-syncing unchanged pages cheap (no re-embedding, just a Graph
  * fetch + hash compare). A run that doesn't finish in time persists its
- * current page URL as a resume point for the next call, rather than always
- * restarting from page one (which could otherwise never make progress past
- * the first page on a large notebook).
+ * section/page position as a resume point for the next call.
+ *
+ * Pages are listed per section (`/me/onenote/sections/{id}/pages`). The
+ * global `/me/onenote/pages` collection fails with Graph 400 / code 20266
+ * once the account has too many sections.
  *
  * Known limitation: pages deleted in OneNote are not removed from
  * Secondbrain (same tradeoff as local-sync-cli, see its README).
@@ -57,61 +51,42 @@ export async function syncOneNote(userId: string): Promise<SyncSummary> {
     .from(syncState)
     .where(and(eq(syncState.userId, userId), eq(syncState.provider, "onenote")));
 
-  let url: string | undefined =
-    state?.cursor ||
-    `${GRAPH_API}/me/onenote/pages?$top=${PAGE_SIZE}&$select=id,title,lastModifiedDateTime,links&$expand=parentSection($select=displayName)`;
+  const outcome = await walkOneNote(readOneNoteCursor(state?.cursor), {
+    fetchJson: async (url) => {
+      const res = await graphFetch(accessToken, url);
+      return res.json();
+    },
+    onPage: async (notePage, section) => {
+      const contentRes = await graphFetch(
+        accessToken,
+        `${GRAPH_API}/me/onenote/pages/${encodeURIComponent(notePage.id)}/content`
+      );
+      const buffer = Buffer.from(await contentRes.arrayBuffer());
 
-  while (url) {
-    const res = await graphFetch(accessToken, url);
-    const page = (await res.json()) as OneNotePagesResponse;
+      const result = await ingestFile({
+        userId,
+        kind: "microsoft365",
+        externalId: `onenote:${notePage.id}`,
+        folderPath: section.displayName ? `OneNote/${section.displayName}` : "OneNote",
+        title: notePage.title || "Ohne Titel",
+        mimeType: "text/html",
+        webUrl: notePage.links?.oneNoteWebUrl?.href ?? null,
+        sourceUpdatedAt: notePage.lastModifiedDateTime
+          ? new Date(notePage.lastModifiedDateTime)
+          : null,
+        buffer,
+      });
+      if (result.skipped) summary.skipped += 1;
+      else summary.processed += 1;
+    },
+    onError: (message) => {
+      summary.errors.push(message);
+    },
+    outOfTime: () => Date.now() > deadline,
+  });
 
-    for (const notePage of page.value) {
-      try {
-        const contentRes = await graphFetch(
-          accessToken,
-          `${GRAPH_API}/me/onenote/pages/${notePage.id}/content`
-        );
-        const buffer = Buffer.from(await contentRes.arrayBuffer());
-
-        const result = await ingestFile({
-          userId,
-          kind: "microsoft365",
-          externalId: `onenote:${notePage.id}`,
-          folderPath: notePage.parentSection?.displayName
-            ? `OneNote/${notePage.parentSection.displayName}`
-            : "OneNote",
-          title: notePage.title || "Ohne Titel",
-          mimeType: "text/html",
-          webUrl: notePage.links?.oneNoteWebUrl?.href ?? null,
-          sourceUpdatedAt: notePage.lastModifiedDateTime
-            ? new Date(notePage.lastModifiedDateTime)
-            : null,
-          buffer,
-        });
-        if (result.skipped) summary.skipped += 1;
-        else summary.processed += 1;
-      } catch (err) {
-        summary.errors.push(`${notePage.title}: ${(err as Error).message}`);
-      }
-
-      if (Date.now() > deadline) {
-        await persistCursor(userId, url);
-        summary.done = false;
-        return summary;
-      }
-    }
-
-    url = page["@odata.nextLink"];
-    if (Date.now() > deadline && url) {
-      await persistCursor(userId, url);
-      summary.done = false;
-      return summary;
-    }
-  }
-
-  // Full pass completed: clear the resume cursor so the next run starts
-  // a fresh re-scan from page one again.
-  await persistCursor(userId, null);
+  summary.done = !outcome.incomplete;
+  await persistCursor(userId, outcome.resume ? writeOneNoteCursor(outcome.resume) : null);
   return summary;
 }
 

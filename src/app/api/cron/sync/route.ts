@@ -3,7 +3,7 @@ import { accounts } from "@/db/schema";
 import { syncGoogleDrive } from "@/lib/connectors/google-drive";
 import { syncMicrosoft365 } from "@/lib/connectors/microsoft365";
 import { syncOneNote } from "@/lib/connectors/onenote";
-import { mergeSyncSummaries, type SyncSummary } from "@/lib/connectors/types";
+import { syncMicrosoftAccount, syncUntilDoneOrDeadline } from "@/lib/connectors/sync-control";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -13,28 +13,6 @@ export const maxDuration = 300;
 // the function is simply cut off earlier and picks up next run — no worse
 // than before, just less time to make progress in one run.
 const OVERALL_DEADLINE_MS = 250_000;
-
-/** Repeats a time-boxed sync call until it reports done, or the shared
- * cron deadline is reached — so a large first sync converges over a few
- * nightly runs instead of one 45s slice per night per user. */
-async function syncUntilDoneOrDeadline(
-  run: () => Promise<SyncSummary>,
-  deadline: number
-): Promise<SyncSummary> {
-  const rounds: SyncSummary[] = [];
-  for (;;) {
-    const result = await run();
-    rounds.push(result);
-    if (result.done || Date.now() > deadline) break;
-    if (result.retryAfterMs && result.retryAfterMs > 0) {
-      const wait = Math.min(result.retryAfterMs, Math.max(0, deadline - Date.now()));
-      if (wait < 500) break;
-      await new Promise((resolve) => setTimeout(resolve, wait));
-      if (Date.now() > deadline) break;
-    }
-  }
-  return mergeSyncSummaries(rounds);
-}
 
 /**
  * Periodic re-sync for every user with a connected account. Wire this up
@@ -67,9 +45,15 @@ export async function GET(request: Request) {
           deadline
         );
       } else if (provider === "microsoft-entra-id") {
-        const files = await syncUntilDoneOrDeadline(() => syncMicrosoft365(userId), deadline);
-        const notes = await syncUntilDoneOrDeadline(() => syncOneNote(userId), deadline);
-        results[`microsoft365:${userId}`] = mergeSyncSummaries([files, notes]);
+        // OneDrive runs first. A failure in either source is reported on
+        // the summary and does not skip the other one.
+        results[`microsoft365:${userId}`] = await syncMicrosoftAccount(
+          {
+            onedrive: () => syncMicrosoft365(userId),
+            onenote: () => syncOneNote(userId),
+          },
+          deadline
+        );
       }
     } catch (err) {
       results[`${provider}:${userId}`] = { error: (err as Error).message };
