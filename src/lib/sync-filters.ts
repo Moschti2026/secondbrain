@@ -2,7 +2,10 @@ import path from "node:path";
 import { SUPPORTED_MIME_TYPES } from "@/lib/extract";
 
 /** Folder names that are tool configuration or VCS internals, not notes. */
-const IGNORED_SEGMENTS = new Set([".obsidian", ".git"]);
+const IGNORED_SEGMENTS = new Set([
+  ".obsidian", ".git", ".trash", "node_modules", ".next", "dist", "build", "out",
+  ".wrangler", ".cache", "__pycache__", ".venv", "venv", "coverage", "Codex-Backups",
+]);
 
 /**
  * True for files inside an Obsidian config directory or a git checkout
