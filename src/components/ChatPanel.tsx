@@ -62,8 +62,8 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="flex h-[70vh] flex-col">
-      <div className="flex-1 space-y-4 overflow-y-auto pb-4">
+    <div className="flex h-[calc(100dvh-9.5rem)] min-h-[22rem] flex-col sm:h-[calc(100dvh-11rem)]">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pb-4">
         {messages.length === 0 && (
           <p className="text-neutral-500">
             Stell eine Frage zu deinen Dateien und Notizen — z.B. &bdquo;Was stand in der letzten
@@ -73,15 +73,15 @@ export default function ChatPanel() {
         {messages.map((m, i) => (
           <div key={i} className={m.role === "user" ? "text-right" : "text-left"}>
             <div
-              className={`inline-block max-w-[85%] rounded-lg px-4 py-2 text-sm ${
+              className={`inline-block max-w-[85%] rounded-lg px-4 py-2 text-sm break-words ${
                 m.role === "user"
                   ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
                   : "bg-neutral-100 dark:bg-neutral-900"
               }`}
             >
-              <p className="whitespace-pre-wrap">{m.content}</p>
+              <p className="whitespace-pre-wrap break-words">{m.content}</p>
               {m.sources && m.sources.length > 0 && (
-                <ol className="mt-2 space-y-0.5 border-t border-neutral-300 pt-2 text-xs text-neutral-500 dark:border-neutral-700">
+                <ol className="mt-2 space-y-0.5 border-t border-neutral-300 pt-2 text-xs break-words text-neutral-500 dark:border-neutral-700">
                   {m.sources.map((s, j) => (
                     <li key={s.documentId}>
                       [{j + 1}]{" "}
@@ -108,12 +108,12 @@ export default function ChatPanel() {
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="Frag dein Secondbrain…"
-          className="flex-1 rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-sm dark:border-neutral-700"
+          className="min-w-0 flex-1 rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-base sm:text-sm dark:border-neutral-700"
         />
         <button
           type="submit"
           disabled={loading}
-          className="rounded-md bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          className="shrink-0 rounded-md bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
         >
           Senden
         </button>

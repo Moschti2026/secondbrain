@@ -26,6 +26,12 @@ async function syncUntilDoneOrDeadline(
     const result = await run();
     rounds.push(result);
     if (result.done || Date.now() > deadline) break;
+    if (result.retryAfterMs && result.retryAfterMs > 0) {
+      const wait = Math.min(result.retryAfterMs, Math.max(0, deadline - Date.now()));
+      if (wait < 500) break;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (Date.now() > deadline) break;
+    }
   }
   return mergeSyncSummaries(rounds);
 }

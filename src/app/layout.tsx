@@ -27,18 +27,20 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       lang="de"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+      <body className="flex min-h-dvh flex-col overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
         {session?.user && (
           <header className="border-b border-neutral-200 dark:border-neutral-800">
-            <nav className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3">
+            <nav className="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
               <Link href="/" className="font-semibold">
                 🧠 Secondbrain
               </Link>
-              <div className="flex items-center gap-4 text-sm">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-sm">
                 <Link href="/chat" className="hover:underline">Chat</Link>
                 <Link href="/documents" className="hover:underline">Dokumente</Link>
                 <Link href="/settings" className="hover:underline">Einstellungen</Link>
-                <span className="text-neutral-400">{session.user.email}</span>
+                <span className="max-w-full truncate text-neutral-400" title={session.user.email ?? undefined}>
+                  {session.user.email}
+                </span>
                 <form
                   action={async () => {
                     "use server";
@@ -53,7 +55,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
             </nav>
           </header>
         )}
-        <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-8">{children}</main>
+        <main className="mx-auto flex min-h-0 w-full min-w-0 max-w-4xl flex-1 flex-col px-4 py-6 sm:py-8">{children}</main>
       </body>
     </html>
   );
