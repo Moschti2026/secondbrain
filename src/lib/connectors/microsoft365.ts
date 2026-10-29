@@ -4,11 +4,13 @@ import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
 import { consolidateDuplicates, ingestFile, noteIndexFailure } from "@/lib/ingest";
 import { EmbeddingRateLimitError } from "@/lib/embeddings";
-import { listPendingDocuments, settleUnindexed } from "@/lib/index-queue";
+import { listPendingDocuments, settleOfficeTempDocuments, settleUnindexed } from "@/lib/index-queue";
 import { unwrapOneDriveCursor, wrapOneDriveCursor } from "@/lib/graph-cursor";
 import {
   isIgnoredVaultPath,
   isIngestableMime,
+  isOfficeTempOrLockFile,
+  OFFICE_TEMP_INDEX_NOTE,
   resolveIngestMimeType,
   shouldSkipForSize,
 } from "@/lib/sync-filters";
@@ -185,6 +187,11 @@ async function ingestDriveItem(
   }
   if (item.folder || !item.file) return;
 
+  if (isOfficeTempOrLockFile(item.name)) {
+    summary.skipped += 1;
+    return;
+  }
+
   const folderPath = parseOneDriveFolderPath(item.parentReference?.path);
   if (isIgnoredVaultPath(folderPath, item.name)) {
     summary.skipped += 1;
@@ -233,12 +240,23 @@ async function retryPendingOneDriveFiles(
     }
     if (Date.now() > pendingDeadline) return { more: true };
 
+    if (isOfficeTempOrLockFile(doc.title)) {
+      await settleUnindexed(doc.id, OFFICE_TEMP_INDEX_NOTE);
+      summary.skipped += 1;
+      continue;
+    }
+
     try {
       const metaRes = await graphFetch(
         accessToken,
         `${GRAPH_API}/me/drive/items/${encodeURIComponent(doc.externalId)}?$select=${encodeURIComponent(SELECT_FIELDS.join(","))}`
       );
       const item = (await metaRes.json()) as DriveItem;
+      if (isOfficeTempOrLockFile(item.name)) {
+        await settleUnindexed(doc.id, OFFICE_TEMP_INDEX_NOTE);
+        summary.skipped += 1;
+        continue;
+      }
       if (item.deleted) {
         await settleUnindexed(doc.id, "Datei in OneDrive gelöscht");
         summary.removed += 1;
@@ -340,6 +358,7 @@ export async function syncMicrosoft365(
     if (!accessToken) throw new Error("Microsoft 365 is not connected for this user.");
 
     await consolidateDuplicates(userId);
+    summary.skipped += await settleOfficeTempDocuments(userId, "microsoft365");
 
     const [state] = await db
       .select()

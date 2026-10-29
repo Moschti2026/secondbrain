@@ -10,6 +10,7 @@ import { unwrapOneDriveCursor, wrapOneDriveCursor } from "./graph-cursor";
 import {
   isIgnoredVaultPath,
   isIngestableMime,
+  isOfficeTempOrLockFile,
   resolveIngestMimeType,
   shouldSkipForSize,
 } from "./sync-filters";
@@ -79,6 +80,20 @@ describe("markdown and vault filters", () => {
   it("does not drop markdown because of the binary size cap", () => {
     assert.equal(shouldSkipForSize("179.md", 50 * 1024 * 1024, 20 * 1024 * 1024), false);
     assert.equal(shouldSkipForSize("scan.pdf", 50 * 1024 * 1024, 20 * 1024 * 1024), true);
+  });
+
+  it("skips Office lock and temp files and keeps real documents", () => {
+    assert.equal(isOfficeTempOrLockFile("~$Interessenswecker_Unternehmer.docx"), true);
+    assert.equal(isOfficeTempOrLockFile("~$budget.xlsx"), true);
+    assert.equal(isOfficeTempOrLockFile("~$folie.pptx"), true);
+    assert.equal(isOfficeTempOrLockFile("~WRL0001.tmp"), true);
+    assert.equal(isOfficeTempOrLockFile("~wrld.TMP"), true);
+    assert.equal(isOfficeTempOrLockFile("Google Drive/~$lock.docx"), true);
+    assert.equal(isOfficeTempOrLockFile("Interessenswecker_Unternehmer.docx"), false);
+    assert.equal(isOfficeTempOrLockFile("Interessenswecker_Unternehmer (1).docx"), false);
+    assert.equal(isOfficeTempOrLockFile("notiz.md"), false);
+    assert.equal(isOfficeTempOrLockFile("~notiz.md"), false);
+    assert.equal(isOfficeTempOrLockFile("bericht.tmp"), false);
   });
 
   it("skips Obsidian config and git internals but keeps notes in every other folder", () => {

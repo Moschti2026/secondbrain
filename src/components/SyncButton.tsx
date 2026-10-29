@@ -9,6 +9,7 @@ interface SyncResponse {
   skipped?: number;
   removed?: number;
   errors?: string[];
+  unsupportedSections?: number;
   /** false = this call hit its time budget with more work left; call again
    * to continue. Older deployments without this field behave as if done. */
   done?: boolean;
@@ -50,7 +51,13 @@ export default function SyncButton({ endpoint, label }: { endpoint: string; labe
     setStatus(null);
     stopRef.current = false;
 
-    const totals = { processed: 0, skipped: 0, removed: 0, errors: [] as string[] };
+    const totals = {
+      processed: 0,
+      skipped: 0,
+      removed: 0,
+      errors: [] as string[],
+      unsupportedSections: 0,
+    };
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
         const body = await runOnce();
@@ -58,11 +65,15 @@ export default function SyncButton({ endpoint, label }: { endpoint: string; labe
         totals.skipped += body.skipped ?? 0;
         totals.removed += body.removed ?? 0;
         if (body.errors?.length) totals.errors.push(...body.errors);
+        totals.unsupportedSections += body.unsupportedSections ?? 0;
 
         const done = body.done ?? true;
         const waiting = !done && body.retryAfterMs && body.retryAfterMs > 0;
         setStatus(
           `${totals.processed} verarbeitet, ${totals.skipped} unverändert, ${totals.removed} entfernt` +
+            (totals.unsupportedSections
+              ? `, ${totals.unsupportedSections} OneNote-Abschnitte nicht unterstützt`
+              : "") +
             (totals.errors.length ? `, ${totals.errors.length} Fehler` : "") +
             (waiting ? " — kurzes Limit, warte…" : done ? "" : " — läuft weiter…")
         );
