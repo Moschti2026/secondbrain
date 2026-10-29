@@ -8,6 +8,7 @@ import { resolveSyncDeadline, syncOutOfTime, SyncInterrupted } from "./sync-cont
 import { recordIngestOutcome, type SyncSummary } from "./types";
 import {
   readOneNoteCursor,
+  readUnsupportedSections,
   walkOneNote,
   writeOneNoteCursor,
 } from "./onenote-pages";
@@ -33,7 +34,10 @@ async function graphFetch(accessToken: string, url: string) {
  *
  * Pages are listed per section (`/me/onenote/sections/{id}/pages`). The
  * global `/me/onenote/pages` collection fails with Graph 400 / code 20266
- * once the account has too many sections.
+ * once the account has too many sections. Sections that answer with 422 /
+ * code 20258 ("Sync of this section is not supported") are stored on this
+ * cursor and skipped. They are tried again after a week, or sooner when
+ * the section's lastModifiedDateTime changes. That list is not an error.
  *
  * Known limitation: pages deleted in OneNote are not removed from
  * Secondbrain (same tradeoff as local-sync-cli, see its README).
@@ -59,6 +63,10 @@ export async function syncOneNote(
     .where(and(eq(syncState.userId, userId), eq(syncState.provider, "onenote")));
 
   const outcome = await walkOneNote(readOneNoteCursor(state?.cursor), {
+    unsupported: readUnsupportedSections(state?.cursor),
+    onUnsupportedSection: () => {
+      summary.unsupportedSections = (summary.unsupportedSections ?? 0) + 1;
+    },
     fetchJson: async (url) => {
       const res = await graphFetch(accessToken, url);
       return res.json();
@@ -110,7 +118,14 @@ export async function syncOneNote(
   });
 
   summary.done = !outcome.incomplete;
-  await persistCursor(userId, outcome.resume ? writeOneNoteCursor(outcome.resume) : null);
+  const cursor =
+    outcome.resume || outcome.unsupported.length > 0
+      ? writeOneNoteCursor(
+          outcome.resume ?? { sectionsUrl: null, pending: [], pagesUrl: null },
+          outcome.unsupported
+        )
+      : null;
+  await persistCursor(userId, cursor);
   return summary;
 }
 

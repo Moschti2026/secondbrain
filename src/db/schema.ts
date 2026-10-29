@@ -158,7 +158,9 @@ export const chunks = pgTable(
 ).enableRLS();
 
 // Incremental-sync cursor per user/provider (Drive startPageToken, Graph
-// deltaLink), so cron re-syncs only pull what changed.
+// deltaLink, OneNote resume plus sections Graph will not sync), so cron
+// re-syncs only pull what changed. The OneNote unsupported-section list
+// lives in this cursor — no separate table.
 export const syncState = pgTable(
   "sync_state",
   {

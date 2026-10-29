@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { mergeSyncSummaries } from "./types";
 import {
   initialOneNoteResume,
   initialSectionsUrl,
   isAllowedOneNoteListUrl,
+  isUnsupportedSectionError,
   ONENOTE_CURSOR_PREFIX,
+  ONENOTE_UNSUPPORTED_RECHECK_MS,
   readOneNoteCursor,
+  readUnsupportedSections,
   sectionPagesUrl,
   walkOneNote,
   writeOneNoteCursor,
   type OneNoteResume,
+  type UnsupportedOneNoteSection,
 } from "./onenote-pages";
 import { syncMicrosoftAccount } from "./sync-control";
 import type { SyncSummary } from "./types";
@@ -141,6 +146,7 @@ describe("OneNote section listing", () => {
       );
       assert.equal(errors.some((message) => message.includes("20266")), true);
       assert.equal(errors.some((message) => message.includes("ingest failed")), true);
+      assert.deepEqual(outcome.unsupported, []);
       assert.equal(logs.lines.some((line) => line.includes("20266")), true);
       assert.equal(logs.lines.some((line) => /bearer|access_token/i.test(line)), false);
     } finally {
@@ -239,6 +245,187 @@ describe("OneNote section listing", () => {
       outOfTime: () => false,
     });
     assert.equal(name, "Alt");
+  });
+
+  const unsupportedSectionError =
+    'Microsoft Graph (OneNote) request failed: 422 {"error":{"code":"20258","message":"Sync of this section is not supported. Detailed error information: Getting Section"}}';
+
+  it("recognises Graph 20258 and ignores the section-limit code 20266", () => {
+    assert.equal(isUnsupportedSectionError(unsupportedSectionError), true);
+    assert.equal(
+      isUnsupportedSectionError(
+        'Microsoft Graph (OneNote) request failed: 400 {"error":{"code":"20266","message":"The number of maximum sections is exceeded"}}'
+      ),
+      false
+    );
+  });
+
+  it("remembers a 20258 section, keeps walking other sections, and does not report an error", async () => {
+    const logs = silenceConsoleError();
+    const urls: string[] = [];
+    const pages: string[] = [];
+    const errors: string[] = [];
+    const skipped: string[] = [];
+    try {
+      const outcome = await walkOneNote(initialOneNoteResume(), {
+        fetchJson: async (url) => {
+          urls.push(url);
+          if (url === initialSectionsUrl()) {
+            return {
+              value: [
+                { id: "locked", displayName: "Alina", lastModifiedDateTime: "2024-01-01T00:00:00Z" },
+                { id: "open", displayName: "Offen", lastModifiedDateTime: "2024-02-01T00:00:00Z" },
+              ],
+            };
+          }
+          if (url === sectionPagesUrl("locked")) throw new Error(unsupportedSectionError);
+          if (url === sectionPagesUrl("open")) return { value: [{ id: "p-open", title: "Weiter" }] };
+          throw new Error(`unexpected ${url}`);
+        },
+        onPage: async (page) => {
+          pages.push(page.id);
+        },
+        onError: (message) => errors.push(message),
+        onUnsupportedSection: (section) => skipped.push(section.id),
+        outOfTime: () => false,
+      });
+
+      assert.deepEqual(pages, ["p-open"]);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(skipped, ["locked"]);
+      assert.equal(outcome.resume, null);
+      assert.equal(outcome.incomplete, false);
+      assert.equal(outcome.unsupported.length, 1);
+      assert.equal(outcome.unsupported[0]?.id, "locked");
+      assert.equal(outcome.unsupported[0]?.lastModified, "2024-01-01T00:00:00Z");
+      assert.equal(urls.includes(sectionPagesUrl("open")), true);
+      assert.equal(logs.lines.some((line) => line.includes("20258")), false);
+    } finally {
+      logs.restore();
+    }
+  });
+
+  it("skips a remembered 20258 section until lastModified changes or a week has passed", async () => {
+    const checkedAt = 1_700_000_000_000;
+    const remembered: UnsupportedOneNoteSection = {
+      id: "locked",
+      displayName: "Alina",
+      lastModified: "2024-01-01T00:00:00Z",
+      checkedAt,
+    };
+    const resume: OneNoteResume = {
+      sectionsUrl: null,
+      pending: [
+        { id: "locked", displayName: "Alina", lastModified: "2024-01-01T00:00:00Z" },
+        { id: "open", displayName: "Offen" },
+      ],
+      pagesUrl: null,
+    };
+
+    const skipped: string[] = [];
+    const urls: string[] = [];
+    const quiet = await walkOneNote(resume, {
+      unsupported: [remembered],
+      now: () => checkedAt + 24 * 60 * 60 * 1000,
+      fetchJson: async (url) => {
+        urls.push(url);
+        if (url === sectionPagesUrl("locked")) throw new Error("should not list a known section");
+        if (url === sectionPagesUrl("open")) return { value: [{ id: "p-open", title: "Weiter" }] };
+        throw new Error(`unexpected ${url}`);
+      },
+      onPage: async () => {},
+      onError: () => {
+        throw new Error("skip path reported an error");
+      },
+      onUnsupportedSection: (section) => skipped.push(section.id),
+      outOfTime: () => false,
+    });
+    assert.deepEqual(skipped, ["locked"]);
+    assert.deepEqual(urls, [sectionPagesUrl("open")]);
+    assert.equal(quiet.unsupported[0]?.checkedAt, checkedAt);
+
+    const changed = await walkOneNote(
+      {
+        ...resume,
+        pending: [
+          { id: "locked", displayName: "Alina", lastModified: "2024-06-01T00:00:00Z" },
+          { id: "open", displayName: "Offen" },
+        ],
+      },
+      {
+        unsupported: [remembered],
+        now: () => checkedAt + 60 * 60 * 1000,
+        fetchJson: async (url) => {
+          if (url === sectionPagesUrl("locked")) return { value: [{ id: "p-locked", title: "Wieder da" }] };
+          if (url === sectionPagesUrl("open")) return { value: [] };
+          throw new Error(`unexpected ${url}`);
+        },
+        onPage: async () => {},
+        onError: () => {
+          throw new Error("recheck reported an error");
+        },
+        outOfTime: () => false,
+      }
+    );
+    assert.deepEqual(changed.unsupported, []);
+
+    const errors: string[] = [];
+    const weekly = await walkOneNote(resume, {
+      unsupported: [remembered],
+      now: () => checkedAt + ONENOTE_UNSUPPORTED_RECHECK_MS,
+      fetchJson: async (url) => {
+        if (url === sectionPagesUrl("locked")) throw new Error(unsupportedSectionError);
+        if (url === sectionPagesUrl("open")) return { value: [] };
+        throw new Error(`unexpected ${url}`);
+      },
+      onPage: async () => {},
+      onError: (message) => errors.push(message),
+      outOfTime: () => false,
+    });
+    assert.deepEqual(errors, []);
+    assert.equal(weekly.unsupported[0]?.id, "locked");
+    assert.equal(weekly.unsupported[0]?.checkedAt, checkedAt + ONENOTE_UNSUPPORTED_RECHECK_MS);
+  });
+
+  it("keeps unsupported sections on a finished cursor and still starts the next pass at the beginning", () => {
+    const unsupported: UnsupportedOneNoteSection[] = [
+      { id: "sec", displayName: "Allgemein", lastModified: null, checkedAt: 10 },
+    ];
+    const finished = writeOneNoteCursor(
+      { sectionsUrl: null, pending: [], pagesUrl: null },
+      unsupported
+    );
+    const next = readOneNoteCursor(finished);
+    assert.equal(next.sectionsUrl, initialSectionsUrl());
+    assert.deepEqual(next.pending, []);
+    assert.equal(next.pagesUrl, null);
+    assert.deepEqual(readUnsupportedSections(finished), unsupported);
+
+    const mid: OneNoteResume = {
+      sectionsUrl: "https://graph.microsoft.com/v1.0/me/onenote/sections?$skiptoken=2",
+      pending: [{ id: "sec!1", displayName: "Notizen", lastModified: "2024-05-01T00:00:00Z" }],
+      pagesUrl: sectionPagesUrl("sec!1"),
+    };
+    const encoded = writeOneNoteCursor(mid, unsupported);
+    assert.deepEqual(readOneNoteCursor(encoded), mid);
+    assert.deepEqual(readUnsupportedSections(encoded), unsupported);
+    assert.deepEqual(readUnsupportedSections(null), []);
+  });
+
+  it("sums unsupported sections across sync slices", () => {
+    const merged = mergeSyncSummaries([
+      { processed: 1, skipped: 0, removed: 0, errors: [], done: false, unsupportedSections: 4 },
+      { processed: 2, skipped: 3, removed: 0, errors: ["echt"], done: true, unsupportedSections: 19 },
+    ]);
+    assert.equal(merged.unsupportedSections, 23);
+    assert.deepEqual(merged.errors, ["echt"]);
+    assert.equal(merged.processed, 3);
+    assert.equal(
+      mergeSyncSummaries([
+        { processed: 0, skipped: 1, removed: 0, errors: [], done: true },
+      ]).unsupportedSections,
+      undefined
+    );
   });
 });
 

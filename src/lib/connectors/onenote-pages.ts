@@ -8,6 +8,11 @@
  * `GET /me/onenote/sections` already includes sections in nested section
  * groups, so this walk does not recurse section groups (that would list
  * the same sections twice).
+ *
+ * Some sections answer `GET .../sections/{id}/pages` with 422 / code 20258
+ * ("Sync of this section is not supported"). Those are remembered on the
+ * cursor and skipped until the section's lastModified changes or a week
+ * has passed.
  */
 
 const GRAPH_API = "https://graph.microsoft.com/v1.0";
@@ -17,6 +22,9 @@ const PAGE_SIZE = 100;
  * this prefix are the old global `/me/onenote/pages` URL and are discarded,
  * because resuming them hits error 20266 again. */
 export const ONENOTE_CURSOR_PREFIX = "on1:";
+
+/** Try a 20258 section again after this long, even if lastModified is unchanged. */
+export const ONENOTE_UNSUPPORTED_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface OneNotePage {
   id: string;
@@ -28,6 +36,16 @@ export interface OneNotePage {
 export interface OneNoteSectionRef {
   id: string;
   displayName: string;
+  /** Section `lastModifiedDateTime` when the sections collection sent it. */
+  lastModified?: string;
+}
+
+/** A section Graph will not sync (422 / code 20258). Stored in the OneNote cursor. */
+export interface UnsupportedOneNoteSection {
+  id: string;
+  displayName: string;
+  lastModified: string | null;
+  checkedAt: number;
 }
 
 export interface OneNoteResume {
@@ -44,6 +62,7 @@ interface OneNoteSectionRow {
   id?: string;
   displayName?: string;
   name?: string;
+  lastModifiedDateTime?: string;
 }
 
 interface GraphCollection<T> {
@@ -52,7 +71,7 @@ interface GraphCollection<T> {
 }
 
 export function initialSectionsUrl(): string {
-  return `${GRAPH_API}/me/onenote/sections?$top=${PAGE_SIZE}&$select=id,displayName`;
+  return `${GRAPH_API}/me/onenote/sections?$top=${PAGE_SIZE}&$select=id,displayName,lastModifiedDateTime`;
 }
 
 export function sectionPagesUrl(sectionId: string): string {
@@ -88,12 +107,14 @@ export function readOneNoteCursor(cursor: string | null | undefined): OneNoteRes
     const pending = Array.isArray(raw.pending)
       ? raw.pending.flatMap((section) => {
           if (!section || typeof section.id !== "string" || !section.id) return [];
-          return [
-            {
-              id: section.id,
-              displayName: typeof section.displayName === "string" ? section.displayName : "",
-            },
-          ];
+          const ref: OneNoteSectionRef = {
+            id: section.id,
+            displayName: typeof section.displayName === "string" ? section.displayName : "",
+          };
+          if (typeof section.lastModified === "string" && section.lastModified) {
+            ref.lastModified = section.lastModified;
+          }
+          return [ref];
         })
       : [];
 
@@ -114,8 +135,45 @@ export function readOneNoteCursor(cursor: string | null | undefined): OneNoteRes
   }
 }
 
-export function writeOneNoteCursor(resume: OneNoteResume): string {
-  return ONENOTE_CURSOR_PREFIX + JSON.stringify(resume);
+export function writeOneNoteCursor(
+  resume: OneNoteResume,
+  unsupported: UnsupportedOneNoteSection[] = []
+): string {
+  const payload = unsupported.length > 0 ? { ...resume, unsupported } : resume;
+  return ONENOTE_CURSOR_PREFIX + JSON.stringify(payload);
+}
+
+export function readUnsupportedSections(
+  cursor: string | null | undefined
+): UnsupportedOneNoteSection[] {
+  if (!cursor?.startsWith(ONENOTE_CURSOR_PREFIX)) return [];
+  try {
+    const raw = JSON.parse(cursor.slice(ONENOTE_CURSOR_PREFIX.length)) as { unsupported?: unknown };
+    if (!Array.isArray(raw.unsupported)) return [];
+    const byId = new Map<string, UnsupportedOneNoteSection>();
+    for (const entry of raw.unsupported) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as Partial<UnsupportedOneNoteSection>;
+      if (typeof row.id !== "string" || !row.id) continue;
+      const checkedAt =
+        typeof row.checkedAt === "number" && Number.isFinite(row.checkedAt) ? row.checkedAt : 0;
+      byId.set(row.id, {
+        id: row.id,
+        displayName: typeof row.displayName === "string" ? row.displayName : "",
+        lastModified: typeof row.lastModified === "string" ? row.lastModified : null,
+        checkedAt,
+      });
+    }
+    return [...byId.values()];
+  } catch {
+    return [];
+  }
+}
+
+/** Graph 422 / code 20258, or the stable message that goes with it. */
+export function isUnsupportedSectionError(message: string): boolean {
+  if (/sync of this section is not supported/i.test(message)) return true;
+  return /["']code["']\s*:\s*["']?20258["']?/.test(message);
 }
 
 export interface OneNoteWalkResult {
@@ -123,6 +181,8 @@ export interface OneNoteWalkResult {
   resume: OneNoteResume | null;
   /** True when the time budget ended the walk and the caller should continue. */
   incomplete: boolean;
+  /** Sections known to return 20258, including ones confirmed on this pass. */
+  unsupported: UnsupportedOneNoteSection[];
 }
 
 function clip(message: string): string {
@@ -136,7 +196,12 @@ function asCollection<T>(value: unknown): GraphCollection<T> | null {
 
 function sectionRef(section: OneNoteSectionRow): OneNoteSectionRef | null {
   if (!section.id) return null;
-  return { id: section.id, displayName: section.displayName || section.name || "" };
+  const ref: OneNoteSectionRef = {
+    id: section.id,
+    displayName: section.displayName || section.name || "",
+  };
+  if (section.lastModifiedDateTime) ref.lastModified = section.lastModifiedDateTime;
+  return ref;
 }
 
 /**
@@ -153,6 +218,11 @@ export async function walkOneNote(
     onPage: (page: OneNotePage, section: OneNoteSectionRef) => Promise<void>;
     onError: (message: string) => void;
     outOfTime: () => boolean;
+    /** Sections already known to return 20258. */
+    unsupported?: UnsupportedOneNoteSection[];
+    /** Counts a section that was skipped or confirmed unsupported. Not an error. */
+    onUnsupportedSection?: (section: OneNoteSectionRef) => void;
+    now?: () => number;
   }
 ): Promise<OneNoteWalkResult> {
   const state: OneNoteResume = {
@@ -160,11 +230,32 @@ export async function walkOneNote(
     pending: resume.pending.map((section) => ({ ...section })),
     pagesUrl: resume.pagesUrl,
   };
+  let unsupported = (deps.unsupported ?? []).map((section) => ({ ...section }));
   const seenSectionLists = new Set<string>();
+  const now = () => deps.now?.() ?? Date.now();
+  const done = (resumePoint: OneNoteResume | null, incomplete: boolean): OneNoteWalkResult => ({
+    resume: resumePoint,
+    incomplete,
+    unsupported,
+  });
   const report = (message: string) => {
     const clipped = clip(message);
     console.error(`[onenote] ${clipped}`);
     deps.onError(clipped);
+  };
+  const rememberUnsupported = (section: OneNoteSectionRef) => {
+    const entry: UnsupportedOneNoteSection = {
+      id: section.id,
+      displayName: section.displayName,
+      lastModified: section.lastModified ?? null,
+      checkedAt: now(),
+    };
+    const index = unsupported.findIndex((known) => known.id === section.id);
+    if (index >= 0) unsupported[index] = entry;
+    else unsupported.push(entry);
+    console.info(
+      `[onenote] Abschnitt nicht unterstützt (20258), übersprungen: ${section.displayName || section.id}`
+    );
   };
 
   while (state.pending.length > 0 || state.sectionsUrl) {
@@ -172,12 +263,12 @@ export async function walkOneNote(
       const sectionsUrl = state.sectionsUrl;
       if (seenSectionLists.has(sectionsUrl)) {
         report("OneNote: Abschnittsliste hat sich wiederholt, Paging gestoppt.");
-        return { resume: state, incomplete: false };
+        return done(state, false);
       }
       seenSectionLists.add(sectionsUrl);
       if (!isAllowedOneNoteListUrl(sectionsUrl)) {
         report("OneNote: Abschnittsliste hat eine unerwartete Adresse, Sync neu gestartet.");
-        return { resume: null, incomplete: false };
+        return done(null, false);
       }
 
       let collection: GraphCollection<OneNoteSectionRow> | null;
@@ -185,11 +276,11 @@ export async function walkOneNote(
         collection = asCollection<OneNoteSectionRow>(await deps.fetchJson(sectionsUrl));
       } catch (err) {
         report(`OneNote: ${(err as Error).message}`);
-        return { resume: state, incomplete: false };
+        return done(state, false);
       }
       if (!collection) {
         report("OneNote: Abschnittsliste ohne verwertbare Antwort.");
-        return { resume: state, incomplete: false };
+        return done(state, false);
       }
 
       const next = collection["@odata.nextLink"];
@@ -204,11 +295,30 @@ export async function walkOneNote(
         return ref ? [ref] : [];
       });
       state.pagesUrl = null;
-      if (deps.outOfTime()) return { resume: state, incomplete: true };
+      if (deps.outOfTime()) return done(state, true);
       continue;
     }
 
     const section = state.pending[0];
+    const known = unsupported.find((entry) => entry.id === section.id);
+    if (known) {
+      const modified =
+        section.lastModified != null && section.lastModified !== known.lastModified;
+      const due = modified || now() - known.checkedAt >= ONENOTE_UNSUPPORTED_RECHECK_MS;
+      if (!due) {
+        deps.onUnsupportedSection?.(section);
+        state.pending.shift();
+        state.pagesUrl = null;
+        if (deps.outOfTime() && (state.pending.length > 0 || state.sectionsUrl)) {
+          return done(state, true);
+        }
+        continue;
+      }
+      // Recheck from the first page. A stored pages URL belongs to a section
+      // that was listing successfully, not to a 20258 section.
+      state.pagesUrl = null;
+    }
+
     let pagesUrl = state.pagesUrl || sectionPagesUrl(section.id);
     const seenPageLists = new Set<string>();
 
@@ -231,20 +341,27 @@ export async function walkOneNote(
       try {
         collection = asCollection<OneNotePage>(await deps.fetchJson(pagesUrl));
       } catch (err) {
-        report(`OneNote/${section.displayName || section.id}: ${(err as Error).message}`);
+        const message = (err as Error).message;
+        if (isUnsupportedSectionError(message)) {
+          rememberUnsupported(section);
+          deps.onUnsupportedSection?.(section);
+          break;
+        }
+        report(`OneNote/${section.displayName || section.id}: ${message}`);
         break;
       }
       if (!collection) {
         report(`OneNote/${section.displayName || section.id}: Seitenliste ohne verwertbare Antwort.`);
         break;
       }
+      if (known) unsupported = unsupported.filter((entry) => entry.id !== section.id);
 
       const pages = Array.isArray(collection.value) ? collection.value : [];
       for (const notePage of pages) {
         if (!notePage?.id) continue;
         if (deps.outOfTime()) {
           state.pagesUrl = pagesUrl;
-          return { resume: state, incomplete: true };
+          return done(state, true);
         }
         try {
           await deps.onPage(notePage, section);
@@ -253,7 +370,7 @@ export async function walkOneNote(
         }
         if (deps.outOfTime()) {
           state.pagesUrl = pagesUrl;
-          return { resume: state, incomplete: true };
+          return done(state, true);
         }
       }
 
@@ -265,15 +382,15 @@ export async function walkOneNote(
         pagesUrl = next ?? "";
       }
       state.pagesUrl = pagesUrl || null;
-      if (pagesUrl && deps.outOfTime()) return { resume: state, incomplete: true };
+      if (pagesUrl && deps.outOfTime()) return done(state, true);
     }
 
     state.pending.shift();
     state.pagesUrl = null;
     if (deps.outOfTime() && (state.pending.length > 0 || state.sectionsUrl)) {
-      return { resume: state, incomplete: true };
+      return done(state, true);
     }
   }
 
-  return { resume: null, incomplete: false };
+  return done(null, false);
 }

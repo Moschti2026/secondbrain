@@ -26,6 +26,25 @@ export function isIgnoredVaultPath(
   return segments.some((segment) => IGNORED_SEGMENTS.has(segment));
 }
 
+/**
+ * Shown on an existing document row for a Word/Excel/PowerPoint lock or
+ * temp file. The row and any chunks stay; the retry queue stops selecting it.
+ */
+export const OFFICE_TEMP_INDEX_NOTE = "Office-Sperrdatei, nicht indexiert";
+
+/**
+ * Owner lock files (`~$Bericht.docx`, also `.xlsx` / `.pptx`) and Office
+ * scratch files (`~WRL0001.tmp`). They are not documents. Drive reports the
+ * lock as a DOCX, and extraction then fails with "DOCX ist kein ZIP".
+ * A real `Bericht.docx` or `Name (1).docx` does not match.
+ */
+export function isOfficeTempOrLockFile(fileName: string | null | undefined): boolean {
+  const base = (fileName ?? "").split(/[/\\]/).pop() ?? "";
+  if (!base) return false;
+  if (base.toLowerCase().startsWith("~$")) return true;
+  return base.startsWith("~") && base.toLowerCase().endsWith(".tmp");
+}
+
 export function isMarkdownFileName(fileName: string | null | undefined): boolean {
   const ext = path.extname(fileName ?? "").toLowerCase();
   return ext === ".md" || ext === ".markdown";

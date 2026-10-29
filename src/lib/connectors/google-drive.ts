@@ -4,7 +4,7 @@ import { syncState } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/oauth";
 import { consolidateDuplicates, ingestFile, noteIndexFailure } from "@/lib/ingest";
 import { EmbeddingRateLimitError } from "@/lib/embeddings";
-import { listPendingDocuments, settleUnindexed } from "@/lib/index-queue";
+import { listPendingDocuments, settleOfficeTempDocuments, settleUnindexed } from "@/lib/index-queue";
 import {
   DRIVE_CURSOR_VERSION,
   encodeDrivePageToken,
@@ -16,6 +16,8 @@ import {
 import {
   isIgnoredVaultPath,
   isIngestableMime,
+  isOfficeTempOrLockFile,
+  OFFICE_TEMP_INDEX_NOTE,
   resolveIngestMimeType,
   shouldSkipForSize,
 } from "@/lib/sync-filters";
@@ -204,6 +206,11 @@ async function ingestDriveFile(
     throw new SyncInterrupted("Zeitbudget erreicht, Google Drive wird fortgesetzt.");
   }
 
+  if (isOfficeTempOrLockFile(file.name)) {
+    summary.skipped += 1;
+    return;
+  }
+
   const folderPath = await resolveDriveFolderPath(accessToken, file.parents, folderCache);
   if (isIgnoredVaultPath(folderPath, file.name)) {
     summary.skipped += 1;
@@ -321,6 +328,12 @@ async function retryPendingDriveFiles(
     }
     if (Date.now() > pendingDeadline) return { more: true };
 
+    if (isOfficeTempOrLockFile(doc.title)) {
+      await settleUnindexed(doc.id, OFFICE_TEMP_INDEX_NOTE);
+      summary.skipped += 1;
+      continue;
+    }
+
     try {
       const res = await driveFetch(
         accessToken,
@@ -328,6 +341,11 @@ async function retryPendingDriveFiles(
         "none"
       );
       const file = (await res.json()) as DriveFile;
+      if (isOfficeTempOrLockFile(file.name)) {
+        await settleUnindexed(doc.id, OFFICE_TEMP_INDEX_NOTE);
+        summary.skipped += 1;
+        continue;
+      }
       if (file.trashed) {
         await settleUnindexed(doc.id, "Datei liegt im Papierkorb und wird nicht indexiert");
         summary.skipped += 1;
@@ -426,6 +444,7 @@ export async function syncGoogleDrive(
     if (!accessToken) throw new Error("Google Drive is not connected for this user.");
 
     await consolidateDuplicates(userId);
+    summary.skipped += await settleOfficeTempDocuments(userId, "google_drive");
 
     const [state] = await db
       .select()

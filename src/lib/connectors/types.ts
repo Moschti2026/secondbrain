@@ -5,6 +5,8 @@ export interface SyncSummary {
   errors: string[];
   /** Copies linked to an existing document instead of embedded again. */
   aliases?: number;
+  /** OneNote sections Graph refuses with 422 / code 20258. Not errors. */
+  unsupportedSections?: number;
   /** false if this call hit its time budget with more work left (a resume
    * cursor was persisted) — the caller should call again immediately to
    * continue, rather than waiting for the next manual click or cron run. */
@@ -15,8 +17,9 @@ export interface SyncSummary {
 }
 
 export function mergeSyncSummaries(summaries: SyncSummary[]): SyncSummary {
-  return summaries.reduce(
-    (acc, s) => ({
+  return summaries.reduce((acc, s) => {
+    const unsupportedSections = (acc.unsupportedSections ?? 0) + (s.unsupportedSections ?? 0);
+    return {
       processed: acc.processed + s.processed,
       skipped: acc.skipped + s.skipped,
       removed: acc.removed + s.removed,
@@ -24,9 +27,9 @@ export function mergeSyncSummaries(summaries: SyncSummary[]): SyncSummary {
       aliases: (acc.aliases ?? 0) + (s.aliases ?? 0),
       done: acc.done && s.done,
       retryAfterMs: Math.max(acc.retryAfterMs ?? 0, s.retryAfterMs ?? 0) || undefined,
-    }),
-    { processed: 0, skipped: 0, removed: 0, errors: [], aliases: 0, done: true }
-  );
+      ...(unsupportedSections > 0 ? { unsupportedSections } : {}),
+    };
+  }, { processed: 0, skipped: 0, removed: 0, errors: [], aliases: 0, done: true });
 }
 
 export function recordIngestOutcome(
