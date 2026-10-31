@@ -36,12 +36,22 @@ Chronologisch, damit dieselben Fehler nicht wiederholt werden:
 9. **Hartnäckiger Sync-Fehler (Drive UND Microsoft 365), auch nach den obigen Fixes:** beide Connectoren riefen `ingestFile()` → `extractText()` → `pdf-parse` auf, welches über `@napi-rs/canvas` eine native Node-Erweiterung lädt, die beim Modul-Import auf Vercel crasht — noch bevor irgendein Try/Catch greifen kann. Das erklärte, warum Login/Dashboard funktionierten (die nie `ingest.ts` importieren), Sync/Ingest-Routen aber sofort und unabhängig von der Dateizahl fehlschlugen. **Fix:** `pdf-parse` durch `unpdf` ersetzt (keine nativen Dependencies, für Serverless/Edge gebaut) — siehe `src/lib/extract.ts`. Das war der eigentliche Root-Cause der Sync-Probleme.
 10. **OneNote 20258 und Office-Sperrdateien (erster Produktions-Sync nach PR #4).** Manche Abschnitte (z.B. in Alina.one, Allerlei.one, Allgemein) antworten dauerhaft mit Graph 422 / Code 20258, "Sync of this section is not supported". Sie stehen im OneNote-Cursor in `sync_state.cursor` (keine neue Tabelle, keine Migration) und werden übersprungen. Neuversuch einmal pro Woche oder früher, wenn `lastModifiedDateTime` sich ändert. Sie zählen als `unsupportedSections`, nicht als Fehler. Dateien `~$*` und `~*.tmp` in Google Drive und OneDrive sind Word-Sperren bzw. Office-Temp-Dateien und werden nicht eingelesen. Bestehende Dokumentzeilen dazu bleiben erhalten; der Extraktionsfehler wird durch „Office-Sperrdatei, nicht indexiert“ ersetzt und der Retry-Zähler steht auf dem Maximum, damit die Warteschlange sie nicht erneut lädt. Chunks werden nicht gelöscht. Echte DOCX mit demselben Extraktionsfehler (z.B. beschädigter Download) laufen weiter über den normalen Retry.
 
-## Deployment-Status (Stand dieser Notiz)
+## Deployment-Status (Stand dieser Notiz, 31.10.2026)
 
-- Produktiv live unter `https://secondbrain-navy-pi.vercel.app` (Login, Dashboard bestätigt funktionsfähig).
+- Produktiv live unter `https://secondbrain-navy-pi.vercel.app` (erreichbar, Login-Redirect bestätigt).
 - Alle 6 externen Accounts eingerichtet: Supabase, Google Cloud, Azure/Entra ID, Anthropic, Voyage AI, Vercel.
-- Letzter Deploy zum Zeitpunkt dieser Notiz: Commit `3471ae5` ("Replace pdf-parse with unpdf"), Vercel-Deployment `dpl_HY7Rb8i8ZnnYehqNjgZqVXcd7g6p`, Status `READY`.
-- **Bestätigt:** Google-Drive-Sync läuft nach dem `unpdf`-Fix — 182 indexierte Dateien mit echtem Inhalt sichtbar in der Ordneransicht (`/documents`). Microsoft-365-Sync-Ergebnis noch nicht separat bestätigt.
+- **Seit der letzten Notiz wurden 5 weitere PRs gemerged (`#1`–`#5`, Commits `2f55e74`…`3ee9fcb`) — nicht von dieser Claude-Session, sondern von Andreas zusammen mit einem Cursor-Agent.** Reale, substanzielle Fixes, u.a.:
+  - Ungültige Google-Drive-Page-Tokens wurden roh gespeichert und ließen den Sync jede Nacht fehlschlagen — behoben.
+  - Embeddings, die ein Rate-Limit trafen, wurden fälschlich als "unverändert" verbucht statt erneut versucht — tausende Dateien wurden so nie indexiert. Jetzt mit Retry (`index-queue.ts`, `ingest-plan.ts`).
+  - OneDrive-Dateien wurden gelistet, aber nicht heruntergeladen — behoben.
+  - Markdown-Dateien mit generischem MIME-Typ von Drive wurden fälschlich verworfen — behoben.
+  - Build-/Dependency-/Cache-Ordner (`node_modules`, `.git`, `.next`, `dist`, `build`, `out`, `.wrangler` u.ä.) werden jetzt beim Sync übersprungen (`sync-filters.ts`) — vorher wurden Tool-Output-Ordner mit eingelesen.
+  - OneNote: Graph-Limit 20266 (globale Seiten-Collection) durch seitenweises Abfragen pro Section behoben (`onenote-pages.ts`); Sections, die dauerhaft mit Graph-Fehler 20258 antworten ("Sync of this section is not supported"), werden erkannt, im Cursor gemerkt und übersprungen statt den ganzen Lauf zum Scheitern zu bringen.
+  - Duplikate (gleicher Content-Hash an mehreren Stellen) werden jetzt auf ein Dokument verlinkt statt doppelt eingebettet.
+  - Word-Sperrdateien (`~$*`) und Office-Temp-Dateien (`~*.tmp`) werden nicht mehr indexiert.
+  - Dedizierte Test-Dateien ergänzt (`*.test.ts` für sync-filters, onenote-pages, extract, ingest-plan, text-sanitize).
+  - Neu: `src/lib/mcp-server.ts`/`mcp-http.ts` (MCP-Pfad-Key-URL-Fix für `mcp-remote`-Kompatibilität), `src/lib/sync-control.ts`, `src/lib/drive-cursor.ts`/`graph-cursor.ts`, `src/lib/index-queue.ts`, `src/lib/text-sanitize.ts`.
+- **Nicht von dieser Session verifiziert:** ob der aktuelle Vercel-Produktions-Deploy wirklich auf dem neuesten Commit (`3ee9fcb`) steht (kein Vercel-API-Zugriff in diesem frischen Container) — sehr wahrscheinlich ja, da die Git-Integration automatisch deployt, aber ungeprüft. Ebenso unbekannt: aktueller Dokumenten-Count, ob der Ersteinlese-Lauf komplett durch ist, ob die frühere Mietvertrag-Suche inzwischen Treffer liefert — dafür fehlt dieser Session der Zugriff auf Andreas' eingeloggte Session/DB.
 
 ## Secrets
 
@@ -72,11 +82,10 @@ Der Chat beantwortet nur inhaltliche Fragen (semantische Suche über Text-Chunks
 
 ## Offene / nächste Schritte
 
-1. Bestätigen, ob Drive-/Microsoft-365-Sync nach dem `unpdf`-Fix erfolgreich läuft (siehe Deployment-Status oben).
-2. **Neu:** Migration `0002_odd_leopardon.sql` in Supabase ausführen (SQL-Editor-SQL in `DEPLOYMENT.md`), dann neu deployen und einmal neu synchronisieren, damit die Ordneransicht unter `/documents` befüllt wird.
-3. Obsidian auf Andreas' Rechner einrichten, verbunden mit `local-sync-cli` → Anleitung: `OBSIDIAN_SETUP.md` (noch nicht begonnen).
-4. ChatGPT Custom GPT Action und/oder Claude.ai-/Langdock-MCP-Connector mit der echten Produktions-Domain einrichten → Anleitung: `CONNECTORS.md` (noch nicht begonnen).
-5. Nicht angebunden, aber vorbereitet: SharePoint-Site-Bibliotheken (Scope `Sites.Read.All` wird bereits anfragt, Connector-Code fehlt noch) — siehe `ARCHITECTURE.md`, Abschnitt "Nicht enthalten".
+1. **Aktuellen Live-Status prüfen:** Dokumenten-Count unter `/documents`, ob der Ersteinlese-Lauf fertig ist, ob die Mietvertrag-Suche jetzt Treffer liefert (siehe oben — seit den 5 PRs unverifiziert).
+2. Obsidian auf Andreas' Rechner einrichten, verbunden mit `local-sync-cli` → Anleitung: `OBSIDIAN_SETUP.md` (noch nicht begonnen).
+3. ChatGPT Custom GPT Action und/oder Claude.ai-/Langdock-MCP-Connector mit der echten Produktions-Domain einrichten → Anleitung: `CONNECTORS.md` (noch nicht begonnen).
+4. Nicht angebunden, aber vorbereitet: SharePoint-Site-Bibliotheken (Scope `Sites.Read.All` wird bereits anfragt, Connector-Code fehlt noch) — siehe `ARCHITECTURE.md`, Abschnitt "Nicht enthalten".
 
 ## Pflegehinweis
 
